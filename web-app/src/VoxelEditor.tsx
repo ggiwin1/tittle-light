@@ -808,7 +808,7 @@ export default function VoxelEditor({
                   onChange={(e) => setOrientation({ ...orientation, layout: e.target.value as Orientation['layout'] })}
                   className="w-full bg-slate-950 border border-slate-700 px-2 py-1.5 rounded-lg text-xs text-slate-200"
                 >
-                  <option value="upright">Upright (y·64 + z·8 + x, tested on Ben's cube)</option>
+                  <option value="upright">Upright (y·64 + (7−z)·8 + x, tested on Ben's cube)</option>
                   <option value="legacy">Legacy (z·64 + y·8 + x)</option>
                 </select>
                 <Toggle on={orientation.flipV} set={(v) => setOrientation({ ...orientation, flipV: v })} label="Upside down" />

@@ -18,7 +18,7 @@ jobs:
         include:
           - os: windows-latest
             artifact: TittleLight-Windows
-            file: TittleLight-Windows.exe
+            file: TittleLight-Windows.zip
           - os: macos-latest          # Apple Silicon Macs
             artifact: TittleLight-Mac-AppleSilicon
             file: TittleLight-Mac-AppleSilicon.zip
@@ -35,12 +35,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install --upgrade pip pyinstaller pillow
+      - run: python -m pip install --upgrade pip wheel pillow
+      - name: Install PyInstaller (macOS)
+        if: runner.os == 'macOS'
+        run: python -m pip install pyinstaller
+      - name: Install PyInstaller with a freshly compiled bootloader (Windows)
+        # Antivirus tools often flag the stock PyInstaller bootloader because malware reuses it.
+        # Compiling our own bootloader and shipping a folder (not a self-extracting one-file exe)
+        # avoids most of those false alarms.
+        if: runner.os == 'Windows'
+        env:
+          PYINSTALLER_COMPILE_BOOTLOADER: "1"
+        run: python -m pip install --no-binary pyinstaller pyinstaller
       - name: Build (Windows)
         if: runner.os == 'Windows'
         run: |
-          pyinstaller --noconfirm --clean --onefile --windowed --name TittleLight --icon icon.png --paths . --hidden-import tittle_image tittle_desktop.py
-          cp dist/TittleLight.exe "dist/${{ matrix.file }}"
+          pyinstaller --noconfirm --clean --onedir --windowed --name TittleLight --icon icon.png --paths . --hidden-import tittle_image tittle_desktop.py
+          cd dist && 7z a -tzip "${{ matrix.file }}" TittleLight
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -67,13 +78,21 @@ jobs:
         with:
           path: apps
           merge-multiple: true
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v v="${{ steps.ver.outputs.version }}" '/^## /{p=($2==v); next} p' CHANGELOG.md > notes.md
+          cat >> notes.md <<'NOTES'
+
+          ### Download
+          - **Windows:** download `TittleLight-Windows.zip`, right-click it and choose Extract All, open the `TittleLight` folder and double-click `TittleLight.exe`. If Windows says "Windows protected your PC", click More info, then Run anyway.
+          - **Mac:** download the Apple Silicon or Intel zip, unzip it, then right-click `TittleLight.app` and choose Open the first time (the app isn't signed).
+          - Prefer Python? `desktop-app/tittle_desktop.py` in the source code is the same app.
+          NOTES
+          sed -i 's/^          //' notes.md
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.ver.outputs.version }}
           name: Tittle Light ${{ steps.ver.outputs.version }}
           target_commitish: ${{ github.sha }}
           files: apps/*
-          body: |
-            **Windows:** download `TittleLight-Windows.exe` and double-click it. If Windows says "Windows protected your PC", click More info, then Run anyway.
-            **Mac:** download the Apple Silicon or Intel zip, unzip it, then right-click `TittleLight.app` and choose Open the first time (the app isn't signed).
-            Prefer Python? `desktop-app/tittle_desktop.py` in the source code is the same app.
+          body_path: notes.md

@@ -82,7 +82,7 @@ The editor's **Format** menu can force either one if auto-detection guesses wron
 
 **Orientation.** The editor, JSON files and presets are all z-up: index `z*64 + y*8 + x`
 (x left→right, y front→back, z bottom→top). Ben's real cube turned out to use its own order,
-`y*64 + z*8 + x`, so the bridge converts every frame just before sending it. The `.bin` export is in
+`y*64 + (7-z)*8 + x` (its vertical index 0 is the top layer), so the bridge converts every frame just before sending it. The `.bin` export is in
 the cube's order too. If a drawing appears upside down or mirrored on a cube, change **Cube
 orientation** in the editor (upright/legacy layout, upside down, mirror left/right).
 

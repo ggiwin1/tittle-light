@@ -128,10 +128,10 @@ export function classifyHandshake(resp: Uint8Array | null | undefined): Handshak
 // ---------------------------------------------------------------------------
 // Orientation. Everything in the apps (editor, JSON, presets) is z-up: index z*64 + y*8 + x with
 // x left→right, y front→back, z bottom→top. Ben's real cube showed its own byte order is
-// y*64 + z*8 + x (front→back slowest, then height, then x). Frames are converted only at the wire.
+// y*64 + (7-z)*8 + x (front→back slowest, then height counted from the TOP, then x). Converted only at the wire.
 // ---------------------------------------------------------------------------
 export interface Orientation {
-  /** 'upright' = device index y*64 + z*8 + x (real cube); 'legacy' = z*64 + y*8 + x (the original assumption). */
+  /** 'upright' = device index y*64 + (7-z)*8 + x (real cube); 'legacy' = z*64 + y*8 + x (the original assumption). */
   layout: 'upright' | 'legacy';
   /** Upside down: z = 0 is the top. */
   flipV: boolean;
@@ -150,8 +150,14 @@ function devicePerm(o: Orientation): Int16Array {
       for (let y = 0; y < SIZE; y++)
         for (let x = 0; x < SIZE; x++) {
           const xx = o.mirrorX ? 7 - x : x;
-          const v = o.flipV ? 7 - z : z;
-          perm[voxelIndex(x, y, z)] = o.layout === 'legacy' ? v * 64 + y * 8 + xx : y * 64 + v * 8 + xx;
+          if (o.layout === 'legacy') {
+            const v = o.flipV ? 7 - z : z;
+            perm[voxelIndex(x, y, z)] = v * 64 + y * 8 + xx;
+          } else {
+            // Ben's cube: the device's vertical index 0 is the TOP layer, so app z=0 (bottom) -> 7.
+            const v = o.flipV ? z : 7 - z;
+            perm[voxelIndex(x, y, z)] = y * 64 + v * 8 + xx;
+          }
         }
     permCache.set(key, perm);
   }

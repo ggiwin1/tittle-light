@@ -5,9 +5,10 @@ Your computer and the cube must be on the same Wi-Fi.
 
 ## Start here: the desktop app
 
-**Easiest:** download the app from the [Releases page](https://github.com/ggiwin1/tittle-light/releases/latest) (`TittleLight-Windows.exe`, or the Mac zip for Apple Silicon or Intel), or use the `apps/` folder if this kit has one:
-- **Windows:** double-click `TittleLight.exe`. If Windows says "Windows protected your PC",
-  click **More info**, then **Run anyway**.
+**Easiest:** download the app from the [Releases page](https://github.com/ggiwin1/tittle-light/releases/latest) (`TittleLight-Windows.zip`, or the Mac zip for Apple Silicon or Intel), or use the `apps/` folder if this kit has one:
+- **Windows:** right-click `TittleLight-Windows.zip`, choose **Extract All**, open the `TittleLight`
+  folder and double-click `TittleLight.exe`. Keep the files in that folder together. If Windows says
+  "Windows protected your PC", click **More info**, then **Run anyway**.
 - **Mac:** unzip the Mac zip. The first time, right-click `TittleLight.app` and
   choose **Open**. The app isn't signed, so a plain double-click gets blocked.
 
@@ -79,9 +80,18 @@ Tittle server, which is now shut down. Two places may still have them:
   double-click apps from the Python file. Run the `.bat` on Windows or `bash build_mac.sh`
   on a Mac. The result appears in `desktop-app/dist/`.
 
+## Windows Defender
+
+Apps made from Python files are sometimes flagged as a "Trojan" by mistake, because malware
+authors use the same packaging tool. Since r7 the Windows app is built in a way that avoids
+most of these false alarms. If Defender still quarantines it:
+- run the Python file instead (see above), which never triggers this, or
+- restore it from **Windows Security → Protection history → Allow**, and report the false
+  positive to Microsoft at https://www.microsoft.com/wdsi/filesubmission so it gets cleared for everyone.
+
 ## Good to know
 
-- The window title shows the app version. This kit is **2026.11.08-r6**. If you see no ⏰ Schedule tab,
+- The window title shows the app version. This kit is **2026.11.08-r7**. See `CHANGELOG.md` for what changed in each version. If you see no ⏰ Schedule tab,
   you are running an older copy: delete it and use the one in this kit.
 - Nothing here has been tested on a real cube yet, only on a simulator. If something
   misbehaves, the 🔍 Debug tab shows what the cube replied.

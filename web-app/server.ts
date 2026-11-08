@@ -13,7 +13,7 @@
  *   POST /api/cube/status     { ip }                                0x60 status query
  *   POST /api/cube/animation  { ip, frames: base64[], intervalMs, intensity, animId?, sfOpt?, format?, orientation? }
  *                             frames are z-up (index z*64 + y*8 + x); the bridge converts them to the cube's
- *                             own order (y*64 + z*8 + x). orientation: { layout: 'upright'|'legacy', flipV, mirrorX }
+ *                             own order (y*64 + (7-z)*8 + x). orientation: { layout: 'upright'|'legacy', flipV, mirrorX }
  *                             format: 'auto' (default, picks by firmware like the app), 'compressed', 'chunks'
  *   POST /api/cube/discover   {}                                    UDP 10000 broadcast + /24 scan
  *   POST /api/cube/pizza      { ip, seconds? }                      easter egg: spinning pizza, then restore
@@ -245,7 +245,7 @@ async function uploadAnimation(req: AnimationRequest, log: Log, progress: Progre
  * packets; older firmware gets 0x21/0x22/0x23 chunks per frame.
  */
 async function uploadUnlocked(req: AnimationRequest, log: Log, progress: Progress, remember: boolean) {
-  // Frames arrive z-up (index z*64 + y*8 + x); the cube wants its own order (y*64 + z*8 + x).
+  // Frames arrive z-up (index z*64 + y*8 + x); the cube wants its own order (y*64 + (7-z)*8 + x).
   const orientation = normalizeOrientation(req.orientation);
   const devFrames = req.frames.map((f) => toDevice(f, orientation));
   const animId = req.animId && req.animId > 0 ? req.animId >>> 0 : contentAnimId(devFrames, req.intervalMs);

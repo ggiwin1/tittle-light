@@ -89,7 +89,7 @@ if getattr(sys, "frozen", False):   # packaged .exe / .app: keep settings in the
 else:
     CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tittle_config.json")
 
-APP_VERSION = "2026.11.08-r6"
+APP_VERSION = "2026.11.08-r7"
 FRAME_BYTES = 512 * 3
 OPCODE_PAINT = 0x90
 OPCODE_MOOD = 0x50
@@ -156,11 +156,13 @@ def _device_perm():
             for y in range(8):
                 for x in range(8):
                     xx = 7 - x if key[2] else x
-                    v = 7 - z if key[1] else z
                     if key[0] == "legacy":
+                        v = 7 - z if key[1] else z
                         perm.append(v * 64 + y * 8 + xx)      # the old (r5 and earlier) layout
                     else:
-                        perm.append(y * 64 + v * 8 + xx)      # depth slowest, then height, then x
+                        # Ben's cube (r6/r7 tests): front->back slowest, then height counted from the TOP, then x.
+                        v = z if key[1] else 7 - z
+                        perm.append(y * 64 + v * 8 + xx)
         _PERM_CACHE[key] = perm
     return _PERM_CACHE[key]
 
@@ -1986,8 +1988,8 @@ class TittleDesktopApp:
         )
         self.initial_ip = initial_ip
         cfg = read_config(self.client.config_file)
-        if isinstance(cfg.get("orientation"), dict):
-            ORIENTATION.update({k: v for k, v in cfg["orientation"].items() if k in ORIENTATION})
+        if isinstance(cfg.get("orientation_r7"), dict):     # r6 settings are ignored: r7 changed the default
+            ORIENTATION.update({k: v for k, v in cfg["orientation_r7"].items() if k in ORIENTATION})
         self.smooth_var = tk.StringVar(value=cfg.get("smoothness", "smooth"))
         self.speed_var = tk.DoubleVar(value=float(cfg.get("speed", 1.0)))
 
@@ -2684,9 +2686,12 @@ class TittleDesktopApp:
         cols = tk.Frame(self.tab_orig, bg="#0f172a")
         cols.pack(fill=tk.BOTH, expand=True)
         left = tk.Frame(cols, bg="#0f172a")
-        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         right = tk.Frame(cols, bg="#0f172a")
-        right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        right.grid(row=0, column=1, sticky="nsew")
+        cols.columnconfigure(0, weight=1, uniform="orig")
+        cols.columnconfigure(1, weight=1, uniform="orig")
+        cols.rowconfigure(0, weight=1)
 
         # (1) on the cube
         c1 = card(left, "1 · Animations stored on the cube")
@@ -2713,13 +2718,31 @@ class TittleDesktopApp:
         btn(r, "Scan", self.on_scan).pack(side=tk.LEFT, padx=4)
         btn(r, "Stop", lambda: self.client.stop_flag.set(), "#991b1b").pack(side=tk.LEFT)
         lab(c1, "Found on the cube (double-click to play):").pack(anchor=tk.W, pady=(8, 2))
-        self.hits_list = tk.Listbox(c1, height=6, bg="#020617", fg="#4ade80", font=("Consolas", 9), bd=0,
+        self.hits_list = tk.Listbox(c1, height=4, bg="#020617", fg="#4ade80", font=("Consolas", 9), bd=0,
                                     selectbackground="#2563eb")
         self.hits_list.pack(fill=tk.X)
         self.hits_list.bind("<Double-Button-1>", lambda e: self.on_play_hit())
         tk.Label(c1, wraplength=440, justify=tk.LEFT, font=("Segoe UI", 8), fg="#94a3b8", bg="#1e293b",
                  text="Experimental: the scan sends a mood header per ID. A stored ID starts playing; any other ID "
                       "is answered with 'data not ready' and dropped. Untested on real hardware.").pack(anchor=tk.W, pady=(6, 0))
+
+        # saved cube presets
+        c3 = card(left, "⭐ Saved presets (stored on the cube)")
+        c3.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        tk.Label(c3, wraplength=440, justify=tk.LEFT, font=("Segoe UI", 8), fg="#94a3b8", bg="#1e293b",
+                 text="Press 'What is it playing now?' while the cube shows an original mood, then '⭐ Save ID above'. "
+                      "The app remembers the ID so one click plays it again. The animation itself stays inside the cube, "
+                      "so a factory reset would erase it; only an old phone's app data holds a full copy.").pack(anchor=tk.W)
+        r = tk.Frame(c3, bg="#1e293b"); r.pack(fill=tk.X, pady=4)
+        btn(r, "⭐ Save ID above", self.on_save_stored, "#a855f7").pack(side=tk.LEFT)
+        btn(r, "▶ Play", self.on_play_saved, "#10b981").pack(side=tk.LEFT, padx=4)
+        btn(r, "✏️ Rename", self.on_rename_saved).pack(side=tk.LEFT)
+        btn(r, "🗑 Delete", self.on_delete_saved, "#991b1b").pack(side=tk.LEFT, padx=4)
+        self.saved_list = tk.Listbox(c3, height=5, bg="#020617", fg="#fde68a", font=("Consolas", 9), bd=0,
+                                     selectbackground="#2563eb")
+        self.saved_list.pack(fill=tk.BOTH, expand=True)
+        self.saved_list.bind("<Double-Button-1>", lambda e: self.on_play_saved())
+        self._refresh_saved()
 
         # (2) old phone database
         c2 = card(right, "2 · From an old phone's Tittle app")
@@ -2773,6 +2796,63 @@ class TittleDesktopApp:
             elif part:
                 out.add(int(part))
         return sorted(v for v in out if 0 <= v <= 255) or [1]
+
+    # ---- saved cube presets (kept in the config file) ----
+    def _saved_presets(self):
+        return list(read_config(self.client.config_file).get("stored_presets", []))
+
+    def _refresh_saved(self):
+        self.saved_list.delete(0, tk.END)
+        for p in self._saved_presets():
+            kind = "Mood" if p.get("opcode") == OPCODE_MOOD else "Emoji"
+            self.saved_list.insert(tk.END, f"{p['name'][:28]:<29} {kind} · ID {p['id']} v{p['version']}")
+
+    def on_save_stored(self):
+        try:
+            aid, ver = int(self.st_id.get()), int(self.st_ver.get())
+        except ValueError:
+            messagebox.showerror("Bad ID", "ID and version must be numbers.")
+            return
+        from tkinter import simpledialog
+        name = simpledialog.askstring("Save preset", f"Name for stored animation ID {aid} (version {ver}):",
+                                      initialvalue=f"Original {aid}", parent=self.root)
+        if not name:
+            return
+        presets = [p for p in self._saved_presets() if not (p["id"] == aid and p["version"] == ver)]
+        presets.append({"name": name.strip(), "id": aid, "version": ver, "opcode": int(self.st_type.get())})
+        update_config(self.client.config_file, stored_presets=presets)
+        self._refresh_saved()
+        self.client.log(f"[+] Saved preset '{name}' (ID {aid}, version {ver}).")
+
+    def _selected_saved(self):
+        sel = self.saved_list.curselection()
+        presets = self._saved_presets()
+        return (sel[0], presets) if sel and sel[0] < len(presets) else (None, presets)
+
+    def on_play_saved(self):
+        i, presets = self._selected_saved()
+        if i is not None:
+            p = presets[i]
+            self.client.play_stored(p["id"], p["version"], p.get("opcode", OPCODE_MOOD), self.cur_intensity)
+
+    def on_rename_saved(self):
+        i, presets = self._selected_saved()
+        if i is None:
+            return
+        from tkinter import simpledialog
+        name = simpledialog.askstring("Rename preset", "New name:", initialvalue=presets[i]["name"], parent=self.root)
+        if name:
+            presets[i]["name"] = name.strip()
+            update_config(self.client.config_file, stored_presets=presets)
+            self._refresh_saved()
+
+    def on_delete_saved(self):
+        i, presets = self._selected_saved()
+        if i is not None and messagebox.askyesno("Delete preset", f"Forget '{presets[i]['name']}'? "
+                                                 "(This only removes the shortcut, not the animation on the cube.)"):
+            del presets[i]
+            update_config(self.client.config_file, stored_presets=presets)
+            self._refresh_saved()
 
     def on_play_stored(self):
         try:
@@ -3059,7 +3139,7 @@ class TittleDesktopApp:
     def _set_orientation(self):
         ORIENTATION.update(layout="legacy" if self.legacy_var.get() else "upright",
                            flip_v=bool(self.flip_var.get()), mirror_x=bool(self.mirror_var.get()))
-        update_config(self.client.config_file, orientation=dict(ORIENTATION))
+        update_config(self.client.config_file, orientation_r7=dict(ORIENTATION))
         self.client.log(f"Orientation set to {ORIENTATION}. Press 'Show test pattern' to check.")
 
     def on_orientation_test(self):
