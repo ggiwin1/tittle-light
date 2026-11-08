@@ -1,0 +1,17 @@
+Sure! Here's a fun light mode for your cube:
+
+```json
+{
+  "name": "Happy Pup",
+  "description": "A brown puppy that wags its tail while spinning",
+  "palette": {"b": "#a0522d", "k": "#000000", "p": "#ff69b4", "w": "#ffffff"},
+  "sprite": ["........", ".bb..bb.", ".bbbbbb.", ".bwbbwb.", ".bbppbb.", "..bbbb.b", "..bbbbbb", "..b..b.."],
+  "sprite2": ["........", ".bb..bb.", ".bbbbbb.", ".bwbbwb.", ".bbppbb.", "..bbbbb.", "..bbbbbb", "..b..b.."],
+  "effect": "Spin",
+  "background": "floor",
+  "background_color": "#203060",
+  "num_frames": 48,
+  "interval_ms": 90
+}
+```
+Enjoy your new light mode!

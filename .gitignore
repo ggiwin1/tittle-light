@@ -1,0 +1,9 @@
+node_modules/
+dist/
+build/
+*.spec
+__pycache__/
+.build-venv/
+tittle_config.json
+.env
+web-app/decompiled_src/

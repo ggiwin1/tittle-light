@@ -1,0 +1,68 @@
+name: Build desktop apps
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths: ["desktop-app/**", ".github/workflows/build-apps.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: TittleLight-Windows
+            file: TittleLight-Windows.exe
+          - os: macos-latest          # Apple Silicon Macs
+            artifact: TittleLight-Mac-AppleSilicon
+            file: TittleLight-Mac-AppleSilicon.zip
+          - os: macos-15-intel        # Intel Macs
+            artifact: TittleLight-Mac-Intel
+            file: TittleLight-Mac-Intel.zip
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: desktop-app
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip pyinstaller pillow
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed --name TittleLight --icon icon.png --paths . --hidden-import tittle_image tittle_desktop.py
+          cp dist/TittleLight.exe "dist/${{ matrix.file }}"
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller --noconfirm --clean --windowed --name TittleLight --icon icon.png \
+            --osx-bundle-identifier com.claudeandchad.tittlelight --paths . --hidden-import tittle_image tittle_desktop.py
+          cd dist && ditto -c -k --keepParent TittleLight.app "${{ matrix.file }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: desktop-app/dist/${{ matrix.file }}
+
+  release:
+    # Pushing a tag such as v2026.11.08-r6 publishes a GitHub release with all three apps attached.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: apps
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: apps/*
+          generate_release_notes: true

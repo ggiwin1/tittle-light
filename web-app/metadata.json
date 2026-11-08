@@ -1,0 +1,8 @@
+{
+  "name": "Remix Tittle Light Control Center",
+  "description": "Protocol analyzer, diagnostic tools, and control center for Tittle Light 3D LED cube.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
