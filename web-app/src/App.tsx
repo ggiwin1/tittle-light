@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import fullDesktopAppScript from '../tittle_desktop.py?raw';
 import VoxelEditor from './VoxelEditor';
-import { bridgeRequest, checkBridge } from './cubeBridge';
+import { bridgeRequest, checkBridge, getOrientation } from './cubeBridge';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'recovered_table' | 'live_tester' | 'novel_presets' | 'frame_spec' | 'python_script' | 'phase2_preview' | 'voxel_editor'>('voxel_editor');
@@ -73,7 +73,7 @@ export default function App() {
       return;
     }
     setPizza(`Sending a pepperoni slice to ${targetIp}…`);
-    const res = await bridgeRequest('pizza', { ip: targetIp, seconds: 5 }, {
+    const res = await bridgeRequest('pizza', { ip: targetIp, seconds: 5, orientation: getOrientation() }, {
       onLog: (l) => {
         if (l.startsWith('🍕')) setPizza('Pizza time! Spinning on the cube for 5 seconds…');
         if (l.startsWith('Restoring')) setPizza('Putting your cube back the way it was…');

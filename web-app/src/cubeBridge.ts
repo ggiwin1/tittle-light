@@ -1,4 +1,5 @@
 // Browser client for the local bridge in server.ts.
+import { DEFAULT_ORIENTATION, normalizeOrientation, type Orientation } from './tittleProtocol';
 
 const DEFAULT_BRIDGE = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
 
@@ -94,4 +95,22 @@ export function bridgeRequest(type: 'send' | 'status' | 'animation' | 'discover'
     ws.onerror = fail;
     ws.onclose = fail;
   });
+}
+
+// Cube orientation (how z-up frames map onto the cube's byte order), shared by the editor and the pizza.
+
+export function getOrientation(): Orientation {
+  try {
+    return normalizeOrientation(JSON.parse(localStorage.getItem('tittle.orientation') || 'null') ?? DEFAULT_ORIENTATION);
+  } catch {
+    return DEFAULT_ORIENTATION;
+  }
+}
+
+export function saveOrientation(o: Orientation) {
+  try {
+    localStorage.setItem('tittle.orientation', JSON.stringify(o));
+  } catch {
+    /* storage unavailable */
+  }
 }

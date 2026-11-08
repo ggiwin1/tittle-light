@@ -30,13 +30,16 @@ import {
   buildPaintHeader,
   bytesToBase64,
   contentAnimId,
+  fromDevice,
+  toDevice,
+  type Orientation,
   fromAnimationJson,
   parseAnimationBinary,
   toAnimationJson,
   toHex,
   voxelIndex,
 } from './tittleProtocol';
-import { bridgeRequest } from './cubeBridge';
+import { bridgeRequest, getOrientation, saveOrientation } from './cubeBridge';
 
 type Frames = Uint8Array[];
 type Tool = 'paint' | 'erase' | 'pick' | 'fill';
@@ -271,6 +274,11 @@ export default function VoxelEditor({
   const [playing, setPlaying] = useState(false);
   const [busy, setBusy] = useState(false);
   const [uploadFormat, setUploadFormat] = useState<'auto' | 'compressed' | 'chunks'>('auto');
+  const [orientation, setOrientationState] = useState<Orientation>(getOrientation);
+  const setOrientation = (o: Orientation) => {
+    setOrientationState(o);
+    saveOrientation(o);
+  };
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
@@ -479,7 +487,9 @@ export default function VoxelEditor({
   });
 
   // ------------------------------------------------------------------ import / export / send
-  const animId = useMemo(() => contentAnimId(frames, intervalMs), [frames, intervalMs]);
+  // The cube's own byte order differs from the editor's z-up order; ids and .bin files use the cube's.
+  const deviceFrames = useMemo(() => frames.map((f) => toDevice(f, orientation)), [frames, orientation]);
+  const animId = useMemo(() => contentAnimId(deviceFrames, intervalMs), [deviceFrames, intervalMs]);
   const header = buildPaintHeader(frames.length, { intervalMs, animId, intensity });
   const totalBytes = 18 + frames.length * (515 + 515 + 521);
   const litCount = useMemo(() => {
@@ -489,7 +499,7 @@ export default function VoxelEditor({
   }, [frame]);
   const safeName = (name.trim() || 'animation').replace(/[^\w.-]+/g, '_');
 
-  const exportBin = () => download(`${safeName}.tittle.bin`, buildAnimationBinary(frames, { intervalMs, animId, intensity }).buffer as ArrayBuffer, "application/octet-stream");
+  const exportBin = () => download(`${safeName}.tittle.bin`, buildAnimationBinary(deviceFrames, { intervalMs, animId, intensity }).buffer as ArrayBuffer, "application/octet-stream");
   const exportJson = () => download(`${safeName}.tittle.json`, JSON.stringify(toAnimationJson(name, frames, intervalMs, intensity), null, 1), 'application/json');
 
   const onImport = async (file: File) => {
@@ -498,7 +508,7 @@ export default function VoxelEditor({
       let res: { frames: Frames; intervalMs: number; intensity: number; name?: string };
       if (buf[0] === 0x90 || buf[0] === 0x50) {
         const p = parseAnimationBinary(buf);
-        res = { frames: p.frames, intervalMs: p.options.intervalMs, intensity: p.options.intensity };
+        res = { frames: p.frames.map((f) => fromDevice(f, orientation)), intervalMs: p.options.intervalMs, intensity: p.options.intensity };
       } else {
         res = fromAnimationJson(JSON.parse(new TextDecoder().decode(buf)));
       }
@@ -521,7 +531,7 @@ export default function VoxelEditor({
     setProgress({ done: 0, total: list.length });
     const res = await bridgeRequest(
       'animation',
-      { ip: targetIp, frames: list.map(bytesToBase64), intervalMs, intensity, format: uploadFormat },
+      { ip: targetIp, frames: list.map(bytesToBase64), intervalMs, intensity, format: uploadFormat, orientation },
       { onLog: (l) => setLog((ls) => [...ls, l]), onProgress: (done, total) => setProgress({ done, total }) },
     );
     setBusy(false);
@@ -790,6 +800,22 @@ export default function VoxelEditor({
                 <option value="chunks">Raw chunks (older firmware)</option>
               </select>
             </div>
+            <details className="text-xs text-slate-400">
+              <summary className="cursor-pointer select-none">Cube orientation</summary>
+              <div className="mt-2 space-y-1.5">
+                <select
+                  value={orientation.layout}
+                  onChange={(e) => setOrientation({ ...orientation, layout: e.target.value as Orientation['layout'] })}
+                  className="w-full bg-slate-950 border border-slate-700 px-2 py-1.5 rounded-lg text-xs text-slate-200"
+                >
+                  <option value="upright">Upright (y·64 + z·8 + x, tested on Ben's cube)</option>
+                  <option value="legacy">Legacy (z·64 + y·8 + x)</option>
+                </select>
+                <Toggle on={orientation.flipV} set={(v) => setOrientation({ ...orientation, flipV: v })} label="Upside down" />
+                <Toggle on={orientation.mirrorX} set={(v) => setOrientation({ ...orientation, mirrorX: v })} label="Mirror left/right" />
+                <p className="text-[11px] text-slate-500">If a drawing shows up sideways or flipped on the cube, change these. Files always stay z-up.</p>
+              </div>
+            </details>
             <div className="grid grid-cols-2 gap-1.5">
               <button
                 onClick={() => sendToCube()}

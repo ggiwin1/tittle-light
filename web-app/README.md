@@ -58,7 +58,7 @@ addresses (10.x, 172.16-31.x, 192.168.x, 169.254.x, 127.x) and listens on 127.0.
 | `GET /api/bridge/health` | | Is the bridge up |
 | `POST /api/cube/send` | `{ ip, hex }` | Sends one packet, returns the reply |
 | `POST /api/cube/status` | `{ ip }` | 0x60 status query |
-| `POST /api/cube/animation` | `{ ip, frames: [base64 x 1536 bytes], intervalMs, intensity, animId? }` | Full upload |
+| `POST /api/cube/animation` | `{ ip, frames: [base64 x 1536 bytes, z-up], intervalMs, intensity, animId?, format?, orientation? }` | Full upload |
 | `POST /api/cube/discover` | `{}` | UDP 10000 broadcast, then a /24 scan of port 9999 |
 | `POST /api/cube/pizza` | `{ ip, seconds? }` | Easter egg (below) |
 
@@ -66,7 +66,7 @@ The same requests work over the WebSocket at `/ws` (`{ id, type: 'animation', ..
 `log` and `progress` messages, which the web app uses.
 
 Upload flow, on one TCP socket: 18-byte `0x90` header, wait for the reply
-(`00 00 20 00 01 01` = send frames, `00 00 20 00 00 00` = already cached), then for each frame
+(byte 4 = `01` means send the frames; byte 3 = `00` otherwise means it already has that id cached, for every animation type), then send
 the frame data, waiting for the cube's ack after each packet, then close the socket so the cube
 starts looping.
 
@@ -79,6 +79,12 @@ reply (bytes 1 and 2) the first time it talks to a cube, just like the official 
 - **Older firmware:** per frame `0x21` (LEDs 0-169), `0x22` (170-339), `0x23` (340-511).
 
 The editor's **Format** menu can force either one if auto-detection guesses wrong.
+
+**Orientation.** The editor, JSON files and presets are all z-up: index `z*64 + y*8 + x`
+(x left→right, y front→back, z bottom→top). Ben's real cube turned out to use its own order,
+`y*64 + z*8 + x`, so the bridge converts every frame just before sending it. The `.bin` export is in
+the cube's order too. If a drawing appears upside down or mirrored on a cube, change **Cube
+orientation** in the editor (upright/legacy layout, upside down, mirror left/right).
 
 ## Easter egg
 

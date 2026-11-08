@@ -11,7 +11,9 @@
  *   GET  /api/bridge/health
  *   POST /api/cube/send       { ip, hex, expectResponse? }          one packet, one reply
  *   POST /api/cube/status     { ip }                                0x60 status query
- *   POST /api/cube/animation  { ip, frames: base64[], intervalMs, intensity, animId?, sfOpt?, format? }
+ *   POST /api/cube/animation  { ip, frames: base64[], intervalMs, intensity, animId?, sfOpt?, format?, orientation? }
+ *                             frames are z-up (index z*64 + y*8 + x); the bridge converts them to the cube's
+ *                             own order (y*64 + z*8 + x). orientation: { layout: 'upright'|'legacy', flipV, mirrorX }
  *                             format: 'auto' (default, picks by firmware like the app), 'compressed', 'chunks'
  *   POST /api/cube/discover   {}                                    UDP 10000 broadcast + /24 scan
  *   POST /api/cube/pizza      { ip, seconds? }                      easter egg: spinning pizza, then restore
@@ -41,6 +43,9 @@ import {
   buildPaintHeader,
   classifyHandshake,
   contentAnimId,
+  normalizeOrientation,
+  type Orientation,
+  toDevice,
   fromHex,
   parseFirmwareVersion,
   pickUploadFormat,
@@ -222,6 +227,8 @@ interface AnimationRequest {
   animId?: number;
   sfOpt?: number;
   format?: UploadFormat;
+  /** How app (z-up) frames map onto this cube's byte order. */
+  orientation?: Orientation;
 }
 
 /**
@@ -238,7 +245,10 @@ async function uploadAnimation(req: AnimationRequest, log: Log, progress: Progre
  * packets; older firmware gets 0x21/0x22/0x23 chunks per frame.
  */
 async function uploadUnlocked(req: AnimationRequest, log: Log, progress: Progress, remember: boolean) {
-  const animId = req.animId && req.animId > 0 ? req.animId >>> 0 : contentAnimId(req.frames, req.intervalMs);
+  // Frames arrive z-up (index z*64 + y*8 + x); the cube wants its own order (y*64 + z*8 + x).
+  const orientation = normalizeOrientation(req.orientation);
+  const devFrames = req.frames.map((f) => toDevice(f, orientation));
+  const animId = req.animId && req.animId > 0 ? req.animId >>> 0 : contentAnimId(devFrames, req.intervalMs);
   const format = await resolveFormat(req.ip, req.format, log);
   const header = buildPaintHeader(req.frames.length, {
     intervalMs: req.intervalMs,
@@ -263,7 +273,7 @@ async function uploadUnlocked(req: AnimationRequest, log: Log, progress: Progres
     }
 
     const packets =
-      format === 'compressed' ? buildCompressedPackets(req.frames) : req.frames.flatMap((f, i) => buildFrameChunks(f, i));
+      format === 'compressed' ? buildCompressedPackets(devFrames) : devFrames.flatMap((f, i) => buildFrameChunks(f, i));
     const raw = req.frames.length * FRAME_BYTES;
     const payload = packets.reduce((n, p) => n + p.length, 0);
     log(
@@ -290,7 +300,7 @@ async function uploadUnlocked(req: AnimationRequest, log: Log, progress: Progres
 }
 
 /** Easter egg: spin a pepperoni slice for a few seconds, then put back whatever was playing. */
-async function pizzaTime(ip: string, seconds: number, log: Log, progress: Progress) {
+async function pizzaTime(ip: string, seconds: number, orientation: Orientation, log: Log, progress: Progress) {
   return serialize(ip, async () => {
     const before = lastState.get(ip);
     let restore: CubeState | undefined = before;
@@ -306,7 +316,7 @@ async function pizzaTime(ip: string, seconds: number, log: Log, progress: Progre
       } else log("Couldn't tell what the cube was showing, so it will be switched off afterwards");
     }
     log('🍕 Pizza time!');
-    await uploadUnlocked({ ip, frames: pizzaFrames(16), intervalMs: 96, intensity: 255 }, log, progress, false);
+    await uploadUnlocked({ ip, frames: pizzaFrames(16), intervalMs: 96, intensity: 255, orientation }, log, progress, false);
     await new Promise((r) => setTimeout(r, seconds * 1000));
     if (restore?.kind === 'animation') {
       log('Restoring the previous animation');
@@ -423,6 +433,7 @@ async function handle(type: string, body: any, log: Log, progress: Progress): Pr
           animId: body.animId ? Number(body.animId) : undefined,
           sfOpt: Number(body.sfOpt) || 0,
           format: ['auto', 'compressed', 'chunks'].includes(body.format) ? body.format : 'auto',
+          orientation: normalizeOrientation(body.orientation),
         },
         log,
         progress,
@@ -432,7 +443,7 @@ async function handle(type: string, body: any, log: Log, progress: Progress): Pr
       return { ips: await discover(log) };
     case 'pizza': {
       const ip = checkTarget(body.ip);
-      return pizzaTime(ip, Math.max(1, Math.min(30, Number(body.seconds) || 5)), log, progress);
+      return pizzaTime(ip, Math.max(1, Math.min(30, Number(body.seconds) || 5)), normalizeOrientation(body.orientation), log, progress);
     }
     default:
       throw new Error(`Unknown request type "${type}"`);

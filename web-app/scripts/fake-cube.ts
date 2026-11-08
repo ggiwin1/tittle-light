@@ -88,6 +88,9 @@ net
                   anim!.lit[i] = lit;
                 });
                 console.log(`[fake-cube] 0x25 stream complete: ${total} packets, ${stream.length} bytes -> ${frames.length} frames`);
+                const litIdx: number[] = [];
+                for (let k = 0; k < 512 && litIdx.length < 8; k++) if (frames[0][k * 3] | frames[0][k * 3 + 1] | frames[0][k * 3 + 2]) litIdx.push(k);
+                console.log(`[fake-cube]   frame 0 lit device indices: ${litIdx.join(', ')}`);
               } catch (e: any) {
                 anim.errors.push(`decode failed: ${e.message}`);
               }

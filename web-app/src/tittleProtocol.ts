@@ -114,12 +114,72 @@ export function parseAnimationBinary(buf: Uint8Array): { frames: Uint8Array[]; o
 
 export type HandshakeKind = 'data_not_ready' | 'cached' | 'none' | 'unknown';
 
-/** Classifies the cube's reply to a header. 00 00 20 00 01 01 = wants frames, 00 00 20 00 00 00 = cached. */
+/**
+ * Classifies the cube's reply to an animation header, for every opcode (as the official app does):
+ * byte 4 == 01 means "data not ready, send the frames"; byte 3 == 00 otherwise means it has the id cached.
+ */
 export function classifyHandshake(resp: Uint8Array | null | undefined): HandshakeKind {
   if (!resp || resp.length === 0) return 'none';
-  if (resp.length >= 5 && resp[4] === 0x01) return 'data_not_ready';
-  if (resp.length >= 6 && resp[4] === 0x00 && resp[5] === 0x00) return 'cached';
+  if (resp.length > 5 && resp[4] === 0x01) return 'data_not_ready';
+  if (resp.length > 5 && resp[0] === 0x00 && resp[3] === 0x00 && resp[4] !== 0x01) return 'cached';
   return 'unknown';
+}
+
+// ---------------------------------------------------------------------------
+// Orientation. Everything in the apps (editor, JSON, presets) is z-up: index z*64 + y*8 + x with
+// x left→right, y front→back, z bottom→top. Ben's real cube showed its own byte order is
+// y*64 + z*8 + x (front→back slowest, then height, then x). Frames are converted only at the wire.
+// ---------------------------------------------------------------------------
+export interface Orientation {
+  /** 'upright' = device index y*64 + z*8 + x (real cube); 'legacy' = z*64 + y*8 + x (the original assumption). */
+  layout: 'upright' | 'legacy';
+  /** Upside down: z = 0 is the top. */
+  flipV: boolean;
+  /** Mirror left/right. */
+  mirrorX: boolean;
+}
+export const DEFAULT_ORIENTATION: Orientation = { layout: 'upright', flipV: false, mirrorX: false };
+
+const permCache = new Map<string, Int16Array>();
+function devicePerm(o: Orientation): Int16Array {
+  const key = `${o.layout}|${!!o.flipV}|${!!o.mirrorX}`;
+  let perm = permCache.get(key);
+  if (!perm) {
+    perm = new Int16Array(VOXELS);
+    for (let z = 0; z < SIZE; z++)
+      for (let y = 0; y < SIZE; y++)
+        for (let x = 0; x < SIZE; x++) {
+          const xx = o.mirrorX ? 7 - x : x;
+          const v = o.flipV ? 7 - z : z;
+          perm[voxelIndex(x, y, z)] = o.layout === 'legacy' ? v * 64 + y * 8 + xx : y * 64 + v * 8 + xx;
+        }
+    permCache.set(key, perm);
+  }
+  return perm;
+}
+
+export function normalizeOrientation(raw: any): Orientation {
+  return {
+    layout: raw?.layout === 'legacy' ? 'legacy' : 'upright',
+    flipV: !!raw?.flipV,
+    mirrorX: !!raw?.mirrorX,
+  };
+}
+
+/** App (z-up) frame -> the byte order the cube expects. */
+export function toDevice(frame: Uint8Array, o: Orientation = DEFAULT_ORIENTATION): Uint8Array {
+  const perm = devicePerm(o);
+  const out = new Uint8Array(FRAME_BYTES);
+  for (let i = 0; i < VOXELS; i++) out.set(frame.subarray(i * 3, i * 3 + 3), perm[i] * 3);
+  return out;
+}
+
+/** Frame in the cube's byte order (.bin dumps) -> app (z-up) frame. */
+export function fromDevice(frame: Uint8Array, o: Orientation = DEFAULT_ORIENTATION): Uint8Array {
+  const perm = devicePerm(o);
+  const out = new Uint8Array(FRAME_BYTES);
+  for (let i = 0; i < VOXELS; i++) out.set(frame.subarray(perm[i] * 3, perm[i] * 3 + 3), i * 3);
+  return out;
 }
 
 /** FNV-1a over the content, so identical animations reuse the cube's cache and edited ones get a new id. */
