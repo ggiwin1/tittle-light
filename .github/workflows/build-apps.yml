@@ -53,16 +53,27 @@ jobs:
           path: desktop-app/dist/${{ matrix.file }}
 
   release:
-    # Pushing a tag such as v2026.11.08-r6 publishes a GitHub release with all three apps attached.
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Every build on main (and every v* tag) publishes a GitHub release named after APP_VERSION
+    # in desktop-app/tittle_desktop.py, with the Windows and Mac apps attached.
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - name: Read the app version
+        id: ver
+        run: echo "version=$(sed -n 's/^APP_VERSION = "\(.*\)"/\1/p' desktop-app/tittle_desktop.py)" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           path: apps
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: Tittle Light ${{ steps.ver.outputs.version }}
+          target_commitish: ${{ github.sha }}
           files: apps/*
-          generate_release_notes: true
+          body: |
+            **Windows:** download `TittleLight-Windows.exe` and double-click it. If Windows says "Windows protected your PC", click More info, then Run anyway.
+            **Mac:** download the Apple Silicon or Intel zip, unzip it, then right-click `TittleLight.app` and choose Open the first time (the app isn't signed).
+            Prefer Python? `desktop-app/tittle_desktop.py` in the source code is the same app.
