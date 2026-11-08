@@ -34,7 +34,7 @@ shows the cube's IP.
 | 🖼️ Picture | Turns any photo into a light mode, either directly or by having an AI (ChatGPT, Gemini, Claude…) design it. |
 | 📁 Files | Opens animations from the web editor (`.json`, `.bin`) and MagicaVoxel `.vox` files, and saves them as JSON. |
 | ♻️ Originals | Tools for finding the original animations (see below). |
-| 🕒 Clock | **Live clock** in 12-hour (a purple bar on top means PM) or 24-hour time. The app draws the time and updates it every minute while the app is open, or a clock face the cube still has saved from the old app. |
+| 🕒 Clock | **Live clock** (uses the computer's time; playing anything else stops it) in 12-hour (a purple bar on top means PM) or 24-hour time. The app draws the time and updates it every minute while the app is open, or a clock face the cube still has saved from the old app. |
 | 🎵 Music | Starts a visualizer the cube still has saved from the old app. The new visualizers were never in the phone app, so this only works if the cube kept one. |
 | 🔍 Debug | **🧭 Show test pattern** checks that animations stand the right way up (blue floor, green wall facing you, red edge on the left). If not, tick *Upside down* or *Mirror left/right*. It also shows every message sent to and from the cube. If something doesn't work, press **📋 Copy log** and paste it to Chad, or **💾 Save log…** and send him the file. |
 
@@ -91,7 +91,7 @@ most of these false alarms. If Defender still quarantines it:
 
 ## Good to know
 
-- The window title shows the app version. This kit is **2026.11.08-r7**. See `CHANGELOG.md` for what changed in each version. If you see no ⏰ Schedule tab,
+- The window title shows the app version. This kit is **2026.11.08-r8**. See `CHANGELOG.md` for what changed in each version. If you see no ⏰ Schedule tab,
   you are running an older copy: delete it and use the one in this kit.
 - Nothing here has been tested on a real cube yet, only on a simulator. If something
   misbehaves, the 🔍 Debug tab shows what the cube replied.

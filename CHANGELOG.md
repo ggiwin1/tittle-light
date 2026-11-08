@@ -2,6 +2,16 @@
 
 The version is shown in the desktop app's window title. Newest first.
 
+## 2026.11.08-r8
+
+- **Live clock no longer takes over:** playing any preset, colour, stored mood or Off now stops the
+  live clock. Before, it came back at the next minute.
+- **Why the live clock works this way:** Clock A uses the computer's clock and sends the time
+  to the cube every minute, so the app has to stay open. The cube has its own clock (Clock B), but
+  it can only draw a clock face it still has stored, because those faces came from the old Tittle
+  server. New **🔍 Find stored faces** button in 🕒 Clock tries face IDs 1 to 100. If it finds one,
+  the cube shows it and keeps time by itself, with no app needed.
+
 ## 2026.11.08-r7
 
 - **Orientation, take two:** r6 stood everything upright but upside down. The vertical axis is

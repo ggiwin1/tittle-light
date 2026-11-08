@@ -89,7 +89,7 @@ if getattr(sys, "frozen", False):   # packaged .exe / .app: keep settings in the
 else:
     CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tittle_config.json")
 
-APP_VERSION = "2026.11.08-r7"
+APP_VERSION = "2026.11.08-r8"
 FRAME_BYTES = 512 * 3
 OPCODE_PAINT = 0x90
 OPCODE_MOOD = 0x50
@@ -320,6 +320,7 @@ class TittleClient:
         self.lock = threading.Lock()
         self.fw_version = None          # (high, low) from the 60 02 status reply
         self.last_action = None         # (method name, args, kwargs) of the last thing shown on the cube
+        self.on_user_action = None      # called with (method, args) whenever something new is shown
         # "chunks" (0x21-0x23) is what worked on Ben's cube in the first real test (2026-11-08).
         # "compressed" (0x25) is what the official app uses on firmware 2.5+; "auto" follows the app's rule.
         self.upload_format = read_config(config_file).get("upload_format", "chunks")
@@ -508,6 +509,11 @@ class TittleClient:
 
     def _remember(self, method, *args, **kwargs):
         self.last_action = (method, args, kwargs)
+        if self.on_user_action:
+            try:
+                self.on_user_action(method, args)
+            except Exception:
+                pass
 
     def restore_last(self):
         """Replay whatever was last shown (used after the pizza easter egg)."""
@@ -749,7 +755,10 @@ class TittleClient:
         s.settimeout(2.0)
         try:
             s.connect((self.ip, self.TCP_PORT))
-            s.sendall(self.build_anim_header(opcode, frames, 100, anim_id, intensity, version, raw_interval=10))
+            if opcode == 0x34:     # clock face: the cube's own clock, if it still has this face stored
+                s.sendall(self.build_clock_header(anim_id, intensity, version))
+            else:
+                s.sendall(self.build_anim_header(opcode, frames, 100, anim_id, intensity, version, raw_interval=10))
             resp = s.recv(64)
             return is_cached_ack(resp), resp
         except Exception:
@@ -915,15 +924,21 @@ class TittleClient:
             self.log("[-] No timers reported (or the cube does not answer 0x81 queries).")
         return found
 
+    @staticmethod
+    def build_clock_header(face_id, intensity=255, version=1, now=None):
+        """0x34: current time + the clock face ID/version. The cube then keeps time on its own."""
+        now = now or datetime.now()
+        return bytes([0x34, now.hour, now.minute, now.second,
+                      (face_id >> 24) & 0xFF, (face_id >> 16) & 0xFF, (face_id >> 8) & 0xFF, face_id & 0xFF,
+                      clamp(intensity), version & 0xFF,
+                      (now.year - 2000) & 0xFF, now.month, now.day,
+                      0, 0, 0, 0, 0, 0x0D, 0x0A])
+
     def sync_clock(self, face_id=1, intensity=255, version=1):
         """0x34: set the time and show a clock face the cube has stored (ID + version)."""
         self._remember("sync_clock", face_id, intensity, version)
         now = datetime.now()
-        header = bytes([0x34, now.hour, now.minute, now.second,
-                        (face_id >> 24) & 0xFF, (face_id >> 16) & 0xFF, (face_id >> 8) & 0xFF, face_id & 0xFF,
-                        clamp(intensity), version & 0xFF,
-                        (now.year - 2000) & 0xFF, now.month, now.day,
-                        0, 0, 0, 0, 0, 0x0D, 0x0A])
+        header = self.build_clock_header(face_id, intensity, version, now)
         self._header_expect_stored("Clock", header, f"Clock synced: {now.strftime('%H:%M:%S')}", "#10b981")
 
     def set_music_mode(self, style_id=1, sensitivity=60, intensity=255, version=1):
@@ -1993,6 +2008,7 @@ class TittleDesktopApp:
         self.smooth_var = tk.StringVar(value=cfg.get("smoothness", "smooth"))
         self.speed_var = tk.DoubleVar(value=float(cfg.get("speed", 1.0)))
 
+        self.client.on_user_action = lambda method, args: self.events.put(("call", lambda: self._other_action(method, args)))
         self.current = None          # Animation in the preview, used by Export / Play on cube
         self.preview_frame = 0
         self.preview_playing = True
@@ -2417,8 +2433,9 @@ class TittleDesktopApp:
         tk.Label(live, text="A · App-drawn clock (works on any cube)", font=("Segoe UI", 10, "bold"),
                  fg="#38bdf8", bg="#1e293b").pack(anchor=tk.W)
         tk.Label(live, wraplength=900, justify=tk.LEFT, font=("Segoe UI", 9), fg="#cbd5e1", bg="#1e293b",
-                 text="Shows the hours (orange) and minutes (blue) in turn on the front of the cube. This app redraws "
-                      "it every minute, so keep the app open; when it is closed the cube keeps showing the last time.").pack(anchor=tk.W, pady=(2, 6))
+                 text="Shows the hours (orange) and minutes (blue) in turn on the front of the cube. This uses the "
+                      "computer's clock: the app redraws it every minute, so keep the app open. Playing anything else "
+                      "stops it. The cube's own clock (B) needs a clock face the cube still has stored.").pack(anchor=tk.W, pady=(2, 6))
         r = tk.Frame(live, bg="#1e293b"); r.pack(anchor=tk.W)
         self.live_btn = btn(r, "▶ Start live clock", self.toggle_live_clock, "#10b981")
         self.live_btn.pack(side=tk.LEFT)
@@ -2445,6 +2462,8 @@ class TittleDesktopApp:
             tk.Entry(r, textvariable=var, width=8, font=("Consolas", 10), bg="#0f172a", fg="#38bdf8",
                      insertbackground="white").pack(side=tk.LEFT, padx=(4, 12))
         btn(r, "🕒 Sync stored clock face", self.on_sync_clock, "#2563eb").pack(side=tk.LEFT)
+        btn(r, "🔍 Find stored faces", self.on_find_faces).pack(side=tk.LEFT, padx=6)
+        btn(r, "Stop", lambda: self.client.stop_flag.set(), "#991b1b").pack(side=tk.LEFT)
 
     def _update_clock_preview(self):
         twelve = getattr(self, "clock_12h", None) is not None and self.clock_12h.get()
@@ -2458,6 +2477,14 @@ class TittleDesktopApp:
                                           1600, self.cur_intensity, opcode=OPCODE_PAINT)
         self.root.after(1000, self._update_clock_preview)
 
+    def _other_action(self, method, args):
+        """Anything else shown on the cube (preset, colour, Off, stored mood...) stops the live clock,
+        otherwise the clock would take over again at the next minute."""
+        is_clock = method == "upload_frames" and args and str(args[0]).startswith("Clock ")
+        if getattr(self, "live_clock_on", False) and not is_clock:
+            self.toggle_live_clock()
+            self.client.log("[i] Live clock stopped because something else was played.")
+
     def _on_clock_fmt(self):
         update_config(self.client.config_file, clock_12h=bool(self.clock_12h.get()))
         self.live_clock_last = None          # redraw on the next tick
@@ -2467,6 +2494,22 @@ class TittleDesktopApp:
         self.live_clock_last = None
         self.live_btn.configure(text="■ Stop live clock" if self.live_clock_on else "▶ Start live clock",
                                 bg="#991b1b" if self.live_clock_on else "#10b981")
+
+    def on_find_faces(self):
+        """Try clock face IDs 1-100 (versions 1-3). A hit means the cube can run its own clock."""
+        if self.live_clock_on:
+            self.toggle_live_clock()
+
+        def hit(face, ver):
+            self.client.stop_flag.set()          # first face found is enough
+            def ui():
+                self.clock_face_var.set(str(face)); self.clock_ver_var.set(str(ver))
+                if self.live_clock_on:
+                    self.toggle_live_clock()
+            self.events.put(("call", ui))
+        self.client.log("[*] Looking for clock faces stored on the cube. If one is found, the cube shows it and "
+                        "keeps time by itself (no app needed).")
+        self.client.scan_stored(1, 100, [1, 2, 3], 0x34, self.cur_intensity, on_hit=hit)
 
     def on_sync_clock(self):
         try:
