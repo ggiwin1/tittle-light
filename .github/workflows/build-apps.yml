@@ -35,7 +35,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install --upgrade pip wheel pillow
+      - run: python -m pip install --upgrade pip wheel pillow pystray
       - name: Install PyInstaller (macOS)
         if: runner.os == 'macOS'
         run: python -m pip install pyinstaller
@@ -50,7 +50,7 @@ jobs:
       - name: Build (Windows)
         if: runner.os == 'Windows'
         run: |
-          pyinstaller --noconfirm --clean --onedir --windowed --name TittleLight --icon icon.png --paths . --hidden-import tittle_image tittle_desktop.py
+          pyinstaller --noconfirm --clean --onedir --windowed --name TittleLight --icon icon.png --paths . --hidden-import tittle_image --hidden-import pystray._win32 --add-data "icon.png;." tittle_desktop.py
           cd dist && 7z a -tzip "${{ matrix.file }}" TittleLight
       - name: Build (macOS)
         if: runner.os == 'macOS'

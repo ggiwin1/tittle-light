@@ -89,7 +89,7 @@ if getattr(sys, "frozen", False):   # packaged .exe / .app: keep settings in the
 else:
     CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tittle_config.json")
 
-APP_VERSION = "2026.11.08-r8"
+APP_VERSION = "2026.11.09-r9"
 FRAME_BYTES = 512 * 3
 OPCODE_PAINT = 0x90
 OPCODE_MOOD = 0x50
@@ -144,25 +144,39 @@ def is_data_not_ready(resp):
 # Ben's real cube showed that the cube's own order is different: its slowest axis runs front→back and
 # the middle axis is vertical. Frames are converted only at the wire (to_device / from_device), and the
 # Debug tab has a test pattern plus flip/mirror switches in case a cube is wired differently.
-ORIENTATION = {"layout": "upright", "flip_v": False, "mirror_x": False}
+ORIENTATION = {"layout": "upright", "flip_v": False, "mirror_x": False, "tilt": 0, "turn": 0}
 _PERM_CACHE = {}
 
 
+def _orient_xyz(x, y, z, tilt, turn, mirror):
+    """User orientation on top of the base mapping: mirror left/right, tilt forward around the
+    left-right axis, then turn around the vertical axis, each in 90-degree steps."""
+    cx, cy, cz = x - 3.5, y - 3.5, z - 3.5
+    if mirror:
+        cx = -cx
+    for _ in range((tilt // 90) % 4):          # tilt forward: the top goes to the front
+        cy, cz = -cz, cy
+    for _ in range((turn // 90) % 4):          # turn clockwise seen from above
+        cx, cy = cy, -cx
+    return int(round(cx + 3.5)), int(round(cy + 3.5)), int(round(cz + 3.5))
+
+
 def _device_perm():
-    key = (ORIENTATION.get("layout"), bool(ORIENTATION.get("flip_v")), bool(ORIENTATION.get("mirror_x")))
+    key = (ORIENTATION.get("layout"), bool(ORIENTATION.get("flip_v")), bool(ORIENTATION.get("mirror_x")),
+           int(ORIENTATION.get("tilt", 0)), int(ORIENTATION.get("turn", 0)))
     if key not in _PERM_CACHE:
         perm = []
         for z in range(8):
             for y in range(8):
                 for x in range(8):
-                    xx = 7 - x if key[2] else x
+                    xx, yy, zz = _orient_xyz(x, y, z, key[3], key[4], key[2])
                     if key[0] == "legacy":
-                        v = 7 - z if key[1] else z
-                        perm.append(v * 64 + y * 8 + xx)      # the old (r5 and earlier) layout
+                        v = 7 - zz if key[1] else zz
+                        perm.append(v * 64 + yy * 8 + xx)      # the old (r5 and earlier) layout
                     else:
-                        # Ben's cube (r6/r7 tests): front->back slowest, then height counted from the TOP, then x.
-                        v = z if key[1] else 7 - z
-                        perm.append(y * 64 + v * 8 + xx)
+                        # Ben's cube (r6-r8 tests): front->back slowest, then height counted from the TOP, then x.
+                        v = zz if key[1] else 7 - zz
+                        perm.append(yy * 64 + v * 8 + xx)
         _PERM_CACHE[key] = perm
     return _PERM_CACHE[key]
 
@@ -507,6 +521,17 @@ class TittleClient:
                 self.status_callback("Connection lost", "#ef4444")
                 return None
 
+    def _note_cached(self, anim_id):
+        """Remember (in the config file) which animation IDs the cube has confirmed, across app sessions."""
+        try:
+            cache = read_config(self.config_file).get("cube_cache", {})
+            cache[str(anim_id)] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            if len(cache) > 300:
+                cache = dict(sorted(cache.items(), key=lambda kv: kv[1])[-300:])
+            update_config(self.config_file, cube_cache=cache)
+        except Exception:
+            pass
+
     def _remember(self, method, *args, **kwargs):
         self.last_action = (method, args, kwargs)
         if self.on_user_action:
@@ -677,7 +702,9 @@ class TittleClient:
 
                     # 2. Handshake: 01 01 = data not ready (send frames), 00 00 = cached
                     resp = self._rx(s, 64)
+                    known = read_config(self.config_file).get("cube_cache", {})
                     if is_cached_ack(resp):
+                        self._note_cached(anim_id)
                         s.close()
                         self.log(f"[+] Cube already has animation ID 0x{anim_id:08X}, playing it without re-uploading.")
                         self.status_callback(f"Playing '{name}' (cached on cube)", "#10b981")
@@ -685,6 +712,10 @@ class TittleClient:
                             on_done()
                         return
 
+                    if str(anim_id) in known:
+                        self.log(f"[i] This app saw the cube store ID {anim_id} on {known[str(anim_id)]}, but the cube "
+                                 f"asked for the data again, so it has dropped it since (it keeps only a limited number "
+                                 f"of animations, or it was switched off). Uploading again.")
                     # 3. Stream the frames on the same persistent socket
                     if not self._stream_frames(s, frames, fmt, name, raw_binary):
                         s.close()
@@ -692,6 +723,7 @@ class TittleClient:
                     time.sleep(0.2)
                     s.close()
                     self.is_connected = True
+                    self._note_cached(anim_id)
                     self.status_callback(f"Playing '{name}' (Looping on Cube)", "#10b981")
                     self.log(f"[+] '{name}' loaded into the cube ({num_frames} frames). "
                              f"Animation is now looping in hardware.")
@@ -1916,37 +1948,6 @@ def generic_sqlite_animations(path):
         con.close()
 
 
-IOS_APP_HINTS = ("tittle", "clarityhk", "spinr", "spin-r")
-
-
-def ios_backup_files(folder):
-    """List the Tittle app's files inside an unencrypted iPhone backup (Finder / iTunes / Apple Devices).
-    Returns [(relative path, path on disk)]."""
-    manifest = os.path.join(folder, "Manifest.db")
-    if not os.path.exists(manifest):
-        raise ValueError("No Manifest.db here. Pick the backup folder itself (a long string of letters and "
-                         "numbers inside MobileSync/Backup).")
-    con = sqlite3.connect(f"file:{manifest}?mode=ro", uri=True)
-    try:
-        try:
-            rows = list(con.execute("SELECT fileID, domain, relativePath, flags FROM Files"))
-        except sqlite3.DatabaseError:
-            raise ValueError("This backup is encrypted. Make a new backup with 'Encrypt local backup' "
-                             "turned off, then try again.")
-    finally:
-        con.close()
-    out = []
-    for file_id, domain, rel, flags in rows:
-        if flags != 1 or not any(h in (domain or "").lower() for h in IOS_APP_HINTS):
-            continue
-        p = os.path.join(folder, file_id[:2], file_id)
-        if not os.path.exists(p):
-            p = os.path.join(folder, file_id)
-        if os.path.exists(p):
-            out.append((f"{domain}/{rel}", p))
-    return out
-
-
 def animations_from_files(files):
     """Try every file (SQLite, JSON, plist, raw) for animations. files = [(label, path)]."""
     animations, notes = [], []
@@ -1978,8 +1979,13 @@ class TittleDesktopApp:
     def __init__(self, root, initial_ip=None):
         self.root = root
         self.root.title(f"Tittle Light Control Center {APP_VERSION}")
-        self.root.geometry("1060x800")
-        self.root.minsize(980, 720)
+        try:
+            self.ui_scale = max(1.0, self.root.winfo_fpixels("1i") / 96.0)   # 1.0 at 100 %, 1.5 at 150 % ...
+        except Exception:
+            self.ui_scale = 1.0
+        sc = self.ui_scale
+        self.root.geometry(f"{int(1060 * sc)}x{int(800 * sc)}")
+        self.root.minsize(int(980 * sc), int(720 * sc))
         self.root.configure(bg="#0f172a")
 
         self.style = ttk.Style()
@@ -2014,6 +2020,7 @@ class TittleDesktopApp:
         self.preview_playing = True
         self.preview_job = None
 
+        self._setup_tray()
         self._build_header()
         self._build_tabs()
         self._build_footer()
@@ -2023,8 +2030,8 @@ class TittleDesktopApp:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(50, self._drain_events)
-        _n, _itv = motion_plan(All3DGenerators.fairies, self.smooth_var.get(), self.speed_var.get())
-        self.set_current(Animation("Fairies 2.0", render_frames(All3DGenerators.fairies, _n, _itv), _itv, self.cur_intensity))
+        _n, _itv = motion_plan(All3DGenerators.aurora, self.smooth_var.get(), self.speed_var.get())
+        self.set_current(Animation("Aurora", render_frames(All3DGenerators.aurora, _n, _itv), _itv, self.cur_intensity))
         self.client.log(f"Tittle Light Control Center {APP_VERSION} started (upload format: {self.client.upload_format})")
         threading.Thread(target=self._auto_start_sniff, daemon=True).start()
 
@@ -2051,8 +2058,68 @@ class TittleDesktopApp:
         self.root.after(50, self._drain_events)
 
     def on_close(self):
+        """The window's X hides to the system tray when a tray icon is available; Quit exits."""
+        if getattr(self, "tray", None) and self.tray_var.get():
+            self.root.withdraw()
+            if not getattr(self, "_tray_hint_shown", False):
+                self._tray_hint_shown = True
+                try:
+                    self.tray.notify("Still running in the system tray. Right-click the icon and choose Quit to exit.",
+                                     "Tittle Light")
+                except Exception:
+                    pass
+            return
+        self.quit_app()
+
+    def quit_app(self):
         self.client.stop_flag.set()
+        if getattr(self, "tray", None):
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
         self.root.destroy()
+
+    def show_window(self):
+        self.root.deiconify()
+        self.root.lift()
+        try:
+            self.root.focus_force()
+        except Exception:
+            pass
+
+    def _setup_tray(self):
+        self.tray = None
+        self.tray_var = tk.BooleanVar(value=bool(read_config(self.client.config_file).get("close_to_tray", True)))
+        if sys.platform != "win32":
+            return
+        try:
+            import pystray
+            from PIL import Image, ImageDraw
+        except ImportError:
+            return
+        img = None
+        for base in (getattr(sys, "_MEIPASS", ""), os.path.dirname(os.path.abspath(__file__))):
+            p = os.path.join(base, "icon.png")
+            if base and os.path.exists(p):
+                try:
+                    img = Image.open(p)
+                    break
+                except Exception:
+                    pass
+        if img is None:
+            img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+            ImageDraw.Draw(img).rectangle((8, 8, 56, 56), fill=(56, 189, 248, 255))
+        post = lambda fn: (lambda icon=None, item=None: self.events.put(("call", fn)))
+        menu = pystray.Menu(
+            pystray.MenuItem("Show Tittle Light", post(self.show_window), default=True),
+            pystray.MenuItem("Turn the cube off", lambda icon=None, item=None: self._bg(self.client.turn_off)),
+            pystray.MenuItem("Quit", post(self.quit_app)))
+        try:
+            self.tray = pystray.Icon("TittleLight", img, "Tittle Light", menu)
+            self.tray.run_detached()
+        except Exception:
+            self.tray = None
 
     def _motion_controls(self, parent):
         """Smoothness + speed row shared by the preset tabs (saved in the config file)."""
@@ -2128,7 +2195,7 @@ class TittleDesktopApp:
 
         # Tab 3: Novel 3D & Fairies
         self.tab_novel = tk.Frame(self.notebook, bg="#0f172a", padx=15, pady=15)
-        self.notebook.add(self.tab_novel, text="✨ 3D & Fairies")
+        self.notebook.add(self.tab_novel, text="✨ 3D Presets")
         self._init_novel_presets_tab()
 
         # Tab 4: 3D Clock
@@ -2161,6 +2228,11 @@ class TittleDesktopApp:
         self.notebook.add(self.tab_sched, text="⏰ Schedule")
         self._init_schedule_tab()
 
+        # Settings
+        self.tab_settings = tk.Frame(self.notebook, bg="#0f172a", padx=15, pady=15)
+        self.notebook.add(self.tab_settings, text="⚙️ Settings")
+        self._init_settings_tab()
+
         # Tab 9: Raw Debug Log
         self.tab_debug = tk.Frame(self.notebook, bg="#0f172a", padx=15, pady=15)
         self.notebook.add(self.tab_debug, text="🔍 Debug")
@@ -2171,6 +2243,13 @@ class TittleDesktopApp:
         footer.pack(fill=tk.X, side=tk.BOTTOM)
         tk.Label(footer, text="Tittle Light 8x8x8 Desktop Controller • Zero Cloud • Local Wi-Fi TCP:9999 / UDP:10000",
                  font=("Segoe UI", 8), fg="#64748b", bg="#090d16").pack(side=tk.LEFT)
+        if getattr(self, "tray", None):
+            tk.Checkbutton(footer, text="Close to tray", variable=self.tray_var, font=("Segoe UI", 8), fg="#64748b",
+                           bg="#090d16", selectcolor="#090d16", activebackground="#090d16",
+                           command=lambda: update_config(self.client.config_file, close_to_tray=bool(self.tray_var.get()))
+                           ).pack(side=tk.LEFT, padx=12)
+            tk.Button(footer, text="Quit", font=("Segoe UI", 8), bg="#334155", fg="white", bd=0, padx=8,
+                      command=self.quit_app).pack(side=tk.LEFT)
         credit = tk.Label(footer, text="🍕 made by Claude and Chad", font=("Segoe UI", 8, "italic"),
                           fg="#64748b", bg="#090d16", cursor="hand2")
         credit.pack(side=tk.RIGHT)
@@ -2359,24 +2438,11 @@ class TittleDesktopApp:
     # TAB 3: NOVEL 3D PRESETS & FAIRIES (User Favorite!)
     # --------------------------------------------------------------------------
     def _init_novel_presets_tab(self):
-        tk.Label(self.tab_novel, text="✨ Novel Generative 3D Presets & Fairies (Full 3D Loops)",
+        tk.Label(self.tab_novel, text="✨ 3D presets (new designs, not the originals)",
                  font=("Segoe UI", 11, "bold"), fg="#f8fafc", bg="#0f172a").pack(anchor=tk.W, pady=(0, 4))
-        tk.Label(self.tab_novel, text="Includes your favorite Fairies mode! Uploads to cube RAM and loops seamlessly in hardware.",
+        tk.Label(self.tab_novel, text="Each one is uploaded once and then loops on the cube by itself.",
                  font=("Segoe UI", 9), fg="#38bdf8", bg="#0f172a").pack(anchor=tk.W, pady=(0, 6))
         self._motion_controls(self.tab_novel)
-
-        # Hero Favorite Card: Fairies
-        hero = tk.Frame(self.tab_novel, bg="#4c1d95", padx=12, pady=4, bd=1, relief=tk.GROOVE)
-        hero.pack(fill=tk.X, pady=(0, 8))
-
-        tk.Label(hero, text="⭐ USER FAVORITE: Enhanced Fairies 2.0", font=("Segoe UI", 11, "bold"), fg="#fef08a", bg="#4c1d95").pack(anchor=tk.W)
-        tk.Label(hero, text="8 glowing fairies gliding through the cube with soft stardust trails (now much smoother).",
-                 font=("Segoe UI", 9), fg="#e9d5ff", bg="#4c1d95").pack(anchor=tk.W, pady=(0, 4))
-
-        btn_fairies = tk.Button(hero, text="🧚 Play Fairies 2.0 (Load & Loop)", font=("Segoe UI", 10, "bold"), bg="#a855f7", fg="white",
-                                bd=0, padx=12, pady=3, cursor="hand2",
-                                command=lambda: self.play_generator("Fairies 2.0", All3DGenerators.fairies, 80))
-        btn_fairies.pack(anchor=tk.W)
 
         # Other Novel Presets
         novel_grid = tk.Frame(self.tab_novel, bg="#0f172a")
@@ -2384,6 +2450,7 @@ class TittleDesktopApp:
 
         generators = [
             ("🌀 4D Tesseract", All3DGenerators.tesseract, 85, "Projection of 4D hypercube turning inside-out", 16),
+            ("🧚 Fairies", All3DGenerators.fairies, 80, "Eight glowing dots drifting with short trails", 16),
             ("🪼 Deep Abyss Jellyfish", All3DGenerators.jellyfish, 95, "Bioluminescent dome pulsing upward with tentacles", 16),
             ("🧬 DNA Double Helix", All3DGenerators.dna, 80, "Spinning magenta & cyan strands with golden base pairs", 16),
             ("🌧️ True 3D Matrix Rain", All3DGenerators.matrix_rain, 80, "Phosphor green falling code cascading across all depths", 16),
@@ -2791,13 +2858,11 @@ class TittleDesktopApp:
         c2 = card(right, "2 · From an old phone's Tittle app")
         c2.pack(fill=tk.BOTH, expand=True)
         tk.Label(c2, wraplength=440, justify=tk.LEFT, font=("Segoe UI", 8), fg="#94a3b8", bg="#1e293b",
-                 text="Android: copy tittle.db off the phone (rooted phone or adb backup) and open it. "
-                      "iPhone (no jailbreak needed): make an UNENCRYPTED backup with Finder (Mac) or iTunes / Apple "
-                      "Devices (Windows), then press 'Open iPhone backup' and pick the backup folder. The app finds the "
-                      "Tittle app's files inside it, lists what it can play, and can copy the raw files out to send to Chad.").pack(anchor=tk.W)
+                 text="Open a database file you copied out of the old Tittle app yourself: tittle.db from Android, or "
+                      "the .sqlite file from the iPhone app's folder (see IPHONE_GUIDE.md for where to look). The file "
+                      "is only read on this computer. Every animation found appears below.").pack(anchor=tk.W)
         r = tk.Frame(c2, bg="#1e293b"); r.pack(fill=tk.X, pady=6)
-        btn(r, "📂 Open tittle.db…", self.on_open_db, "#2563eb").pack(side=tk.LEFT)
-        btn(r, "📱 Open iPhone backup…", self.on_open_ios_backup, "#2563eb").pack(side=tk.LEFT, padx=4)
+        btn(r, "📂 Open app database…", self.on_open_db, "#2563eb").pack(side=tk.LEFT)
         btn(r, "⚡ Play", self.on_play_db, "#10b981").pack(side=tk.LEFT, padx=4)
         btn(r, "💾 Save all…", self.on_export_db).pack(side=tk.LEFT)
         self.db_list = tk.Listbox(c2, height=12, bg="#020617", fg="#e2e8f0", font=("Consolas", 9), bd=0,
@@ -2925,7 +2990,8 @@ class TittleDesktopApp:
 
     def on_open_db(self):
         path = filedialog.askopenfilename(title="Open the Tittle app database",
-                                          filetypes=[("Tittle app database", "*.db *.sqlite"), ("All files", "*.*")])
+                                          filetypes=[("Tittle app database", "*.db *.sqlite *.sqlite3 *.store"),
+                                                     ("All files", "*.*")])
         if not path:
             return
         try:
@@ -2940,44 +3006,6 @@ class TittleDesktopApp:
         self.client.log(f"[+] {len(anims)} animation(s) recovered from {os.path.basename(path)}")
         for n in notes:
             self.client.log(f"    {n}")
-
-    def on_open_ios_backup(self):
-        start = os.path.expanduser("~/Library/Application Support/MobileSync/Backup") if sys.platform == "darwin" \
-            else next((p for p in (os.path.expandvars(r"%APPDATA%\Apple Computer\MobileSync\Backup"),
-                                   os.path.expanduser(r"~\Apple\MobileSync\Backup")) if os.path.isdir(p)), os.path.expanduser("~"))
-        folder = filedialog.askdirectory(title="Pick the iPhone backup folder (inside MobileSync/Backup)",
-                                         initialdir=start if os.path.isdir(start) else os.path.expanduser("~"))
-        if not folder:
-            return
-        try:
-            files = ios_backup_files(folder)
-        except Exception as e:
-            messagebox.showerror("Could not read the backup", str(e))
-            return
-        if not files:
-            messagebox.showinfo("Tittle app not found",
-                                "This backup has no files from the Tittle app. Was it installed on this phone when the "
-                                "backup was made? (Note: apps' cache folders are never included in backups.)")
-            return
-        self.client.log(f"[+] Found {len(files)} Tittle app file(s) in the backup:")
-        for label, _ in files:
-            self.client.log(f"    {label}")
-        anims, notes = animations_from_files(files)
-        for n in notes:
-            self.client.log(f"    {n}")
-        self._show_db_anims(anims, "the iPhone backup")
-        if messagebox.askyesno("Save the raw files?",
-                               f"Found {len(files)} Tittle app file(s) and {len(anims)} playable animation(s).\n\n"
-                               "Copy the Tittle app's files to a folder too? If the animations are not all there, zip "
-                               "that folder and send it to Chad so the importer can be taught the format."):
-            out = filedialog.askdirectory(title="Where to copy the Tittle app's files")
-            if out:
-                import shutil
-                for label, p in files:
-                    dest = os.path.join(out, "TittleAppFiles", *label.replace("\\", "/").split("/"))
-                    os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    shutil.copy2(p, dest)
-                self.client.log(f"[+] Copied {len(files)} file(s) to {os.path.join(out, 'TittleAppFiles')}")
 
     def _show_db_anims(self, anims, source):
         self.db_anims = anims
@@ -3139,20 +3167,7 @@ class TittleDesktopApp:
                            selectcolor="#0f172a", activebackground="#0f172a", font=("Segoe UI", 9),
                            command=self._set_format).pack(side=tk.LEFT, padx=4)
 
-        orient_row = tk.Frame(self.tab_debug, bg="#0f172a")
-        orient_row.pack(fill=tk.X, pady=(0, 6))
-        tk.Label(orient_row, text="Cube orientation:", font=("Segoe UI", 9, "bold"), fg="#cbd5e1", bg="#0f172a").pack(side=tk.LEFT)
-        tk.Button(orient_row, text="🧭 Show test pattern", bg="#2563eb", fg="white", font=("Segoe UI", 8, "bold"), bd=0,
-                  padx=8, pady=2, command=self.on_orientation_test).pack(side=tk.LEFT, padx=6)
-        self.flip_var = tk.BooleanVar(value=ORIENTATION["flip_v"])
-        self.mirror_var = tk.BooleanVar(value=ORIENTATION["mirror_x"])
-        self.legacy_var = tk.BooleanVar(value=ORIENTATION["layout"] == "legacy")
-        for text, var in (("Upside down", self.flip_var), ("Mirror left/right", self.mirror_var),
-                          ("Old layout (r5 and earlier)", self.legacy_var)):
-            tk.Checkbutton(orient_row, text=text, variable=var, command=self._set_orientation, bg="#0f172a", fg="#e2e8f0",
-                           selectcolor="#0f172a", activebackground="#0f172a", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=4)
-        tk.Label(self.tab_debug, text="The test pattern should show a blue floor, a green wall facing you, a red edge on the "
-                                      "left and a white dot in the top-right corner. If not, tick a box and press it again.",
+        tk.Label(self.tab_debug, text="Cube orientation (test pattern, flips and turns) is in the ⚙️ Settings tab.",
                  font=("Segoe UI", 8), fg="#94a3b8", bg="#0f172a").pack(anchor=tk.W, pady=(0, 6))
 
         for label, fn in (("Mode?", self.client.query_mode), ("Status", self.client.query_status)):
@@ -3179,11 +3194,66 @@ class TittleDesktopApp:
         for tag, color in (("rx", "#4ade80"), ("err", "#f87171"), ("ok", "#a3e635")):
             self.log_text.tag_configure(tag, foreground=color)
 
+    def _init_settings_tab(self):
+        tk.Label(self.tab_settings, text="Cube orientation", font=("Segoe UI", 11, "bold"), fg="#f8fafc",
+                 bg="#0f172a").pack(anchor=tk.W)
+        tk.Label(self.tab_settings, wraplength=950, justify=tk.LEFT, font=("Segoe UI", 9), fg="#cbd5e1", bg="#0f172a",
+                 text="If animations look tipped over, upside down, turned or mirrored on your cube, fix it here once. "
+                      "Every change shows the test pattern on the cube right away, and the choice is remembered. "
+                      "Correct result: a blue floor, a green wall facing you, a red edge on the left, and a white dot "
+                      "in the top-right corner of the green wall.").pack(anchor=tk.W, pady=(4, 10))
+        card = tk.Frame(self.tab_settings, bg="#1e293b", padx=15, pady=12)
+        card.pack(fill=tk.X)
+        opts = dict(bg="#1e293b", fg="#e2e8f0", selectcolor="#0f172a", activebackground="#1e293b", font=("Segoe UI", 9))
+        self.tilt_var = tk.IntVar(value=int(ORIENTATION.get("tilt", 0)))
+        self.turn_var = tk.IntVar(value=int(ORIENTATION.get("turn", 0)))
+        self.flip_var = tk.BooleanVar(value=ORIENTATION["flip_v"])
+        self.mirror_var = tk.BooleanVar(value=ORIENTATION["mirror_x"])
+        self.legacy_var = tk.BooleanVar(value=ORIENTATION["layout"] == "legacy")
+        for label, var, hint in (("Tilt forward", self.tilt_var, "use this if the floor shows up on the front or back"),
+                                 ("Turn", self.turn_var, "use this if the green wall is on the left, right or back")):
+            r = tk.Frame(card, bg="#1e293b"); r.pack(anchor=tk.W, pady=2)
+            tk.Label(r, text=f"{label}:", width=12, anchor="w", font=("Segoe UI", 9, "bold"), fg="#cbd5e1",
+                     bg="#1e293b").pack(side=tk.LEFT)
+            for deg in (0, 90, 180, 270):
+                tk.Radiobutton(r, text=f"{deg}°", value=deg, variable=var, command=self._set_orientation,
+                               **opts).pack(side=tk.LEFT, padx=4)
+            tk.Label(r, text=f"  ({hint})", font=("Segoe UI", 8), fg="#94a3b8", bg="#1e293b").pack(side=tk.LEFT)
+        r = tk.Frame(card, bg="#1e293b"); r.pack(anchor=tk.W, pady=(6, 2))
+        for text, var in (("Upside down", self.flip_var), ("Mirror left/right", self.mirror_var),
+                          ("Old layout (versions r5 and earlier)", self.legacy_var)):
+            tk.Checkbutton(r, text=text, variable=var, command=self._set_orientation, **opts).pack(side=tk.LEFT, padx=(0, 12))
+        r = tk.Frame(card, bg="#1e293b"); r.pack(anchor=tk.W, pady=(10, 0))
+        tk.Button(r, text="🧭 Show test pattern", bg="#2563eb", fg="white", font=("Segoe UI", 9, "bold"), bd=0,
+                  padx=10, pady=4, command=self.on_orientation_test).pack(side=tk.LEFT)
+        tk.Button(r, text="↺ Reset to default", bg="#334155", fg="white", font=("Segoe UI", 9, "bold"), bd=0,
+                  padx=10, pady=4, command=self._reset_orientation).pack(side=tk.LEFT, padx=8)
+        self.orient_lbl = tk.Label(r, text="", font=("Segoe UI", 9), fg="#94a3b8", bg="#1e293b")
+        self.orient_lbl.pack(side=tk.LEFT, padx=8)
+        self._describe_orientation()
+
+    def _describe_orientation(self):
+        o = ORIENTATION
+        parts = [f"tilt {o.get('tilt', 0)}°", f"turn {o.get('turn', 0)}°"]
+        parts += [p for p, on in (("upside down", o["flip_v"]), ("mirrored", o["mirror_x"]),
+                                  ("old layout", o["layout"] == "legacy")) if on]
+        self.orient_lbl.configure(text="Current: " + ", ".join(parts) +
+                                  ("  (default)" if parts == ["tilt 0°", "turn 0°"] else ""))
+
+    def _reset_orientation(self):
+        self.tilt_var.set(0); self.turn_var.set(0)
+        self.flip_var.set(False); self.mirror_var.set(False); self.legacy_var.set(False)
+        self._set_orientation()
+
     def _set_orientation(self):
         ORIENTATION.update(layout="legacy" if self.legacy_var.get() else "upright",
-                           flip_v=bool(self.flip_var.get()), mirror_x=bool(self.mirror_var.get()))
+                           flip_v=bool(self.flip_var.get()), mirror_x=bool(self.mirror_var.get()),
+                           tilt=int(self.tilt_var.get()), turn=int(self.turn_var.get()))
         update_config(self.client.config_file, orientation_r7=dict(ORIENTATION))
-        self.client.log(f"Orientation set to {ORIENTATION}. Press 'Show test pattern' to check.")
+        self._describe_orientation()
+        self.client.log(f"Orientation set to {ORIENTATION}.")
+        if self.client.ip:
+            self.on_orientation_test()
 
     def on_orientation_test(self):
         buf = bytearray(FRAME_BYTES)
@@ -3430,14 +3500,16 @@ class TittleDesktopApp:
 
     def _make_cube_view(self, parent, W=320, H=330):
         """A canvas drawing the 8x8x8 cube; every view shows the current preview frame."""
+        sc = getattr(self, "ui_scale", 1.0)
+        W, H = int(W * sc), int(H * sc)
         canvas = tk.Canvas(parent, width=W, height=H, bg="#020617", highlightthickness=0)
         items = [None] * 512
-        ox, oy, step, kx, ky = 28, H - 40, 27, 13, 11
+        ox, oy, step, kx, ky = 28 * sc, H - 40 * sc, 27 * sc, 13 * sc, 11 * sc
         for x, y, z in sorted(((x, y, z) for x in range(8) for y in range(8) for z in range(8)),
                               key=lambda p: (-p[1], p[2], p[0])):
-            sx, sy, r = ox + x * step + y * kx, oy - z * step - y * ky, 6.0 - y * 0.4
+            sx, sy, r = ox + x * step + y * kx, oy - z * step - y * ky, (6.0 - y * 0.4) * sc
             items[voxel_index(x, y, z)] = canvas.create_oval(sx - r, sy - r, sx + r, sy + r, fill="#1e293b", outline="")
-        canvas.create_text(8, H - 10, anchor="w", fill="#64748b", font=("Segoe UI", 7),
+        canvas.create_text(8 * sc, H - 10 * sc, anchor="w", fill="#64748b", font=("Segoe UI", 7),
                            text="front face nearest · x → right · y ↗ back · z ↑")
         if not hasattr(self, "cube_views"):
             self.cube_views = []
@@ -3473,6 +3545,20 @@ class TittleDesktopApp:
 # ==============================================================================
 # MAIN ENTRY POINT
 # ==============================================================================
+def enable_dpi_awareness():
+    """Sharp text on high-DPI Windows screens (otherwise Windows stretches a blurry 96-DPI window)."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)      # system DPI aware (Windows 8.1+)
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()           # Vista / 7 fallback
+    except Exception:
+        pass
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Tittle Light 8x8x8 cube desktop control center")
     ap.add_argument("--ip", help="cube IP address to try first")
@@ -3480,6 +3566,7 @@ def main(argv=None):
     if tk is None:
         print("tkinter is not available. On Linux install it with: sudo apt install python3-tk")
         return 1
+    enable_dpi_awareness()
     root = tk.Tk()
     TittleDesktopApp(root, initial_ip=args.ip)
     root.mainloop()

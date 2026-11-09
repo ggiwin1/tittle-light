@@ -29,14 +29,15 @@ shows the cube's IP.
 | --- | --- |
 | 💡 Lamp | Any solid colour and brightness. The red **Off** button is at the top. |
 | 🎨 Look-alikes | Fireplace, Wave, Rain, Snow, Sparkle, Fireworks, Vortex, plus Sunset, Constellation, Snow Globe and Confetti (names from the original Indiegogo campaign). These are **not** the real originals, only look-alikes (see "Original animations" below). |
-| ✨ 3D & Fairies | Fairies 2.0 and 3D effects, plus 8 new ones (🆕): Aurora, Lava Lamp, Spiral Galaxy, Heartbeat, Warp Speed, Plasma, Bouncing Balls, Rainbow Spin. |
+| ✨ 3D Presets | New 3D effects (not originals): Tesseract, Fairies, Jellyfish, DNA, Matrix Rain, Acoustic Ripple, Aurora, Lava Lamp, Spiral Galaxy, Heartbeat, Warp Speed, Plasma, Bouncing Balls, Rainbow Spin. |
 | ⏰ Schedule | Turns the cube **off every night** and **back on every morning**. The timer is saved on the cube, so it works with the app closed. |
 | 🖼️ Picture | Turns any photo into a light mode, either directly or by having an AI (ChatGPT, Gemini, Claude…) design it. |
 | 📁 Files | Opens animations from the web editor (`.json`, `.bin`) and MagicaVoxel `.vox` files, and saves them as JSON. |
 | ♻️ Originals | Tools for finding the original animations (see below). |
 | 🕒 Clock | **Live clock** (uses the computer's time; playing anything else stops it) in 12-hour (a purple bar on top means PM) or 24-hour time. The app draws the time and updates it every minute while the app is open, or a clock face the cube still has saved from the old app. |
 | 🎵 Music | Starts a visualizer the cube still has saved from the old app. The new visualizers were never in the phone app, so this only works if the cube kept one. |
-| 🔍 Debug | **🧭 Show test pattern** checks that animations stand the right way up (blue floor, green wall facing you, red edge on the left). If not, tick *Upside down* or *Mirror left/right*. It also shows every message sent to and from the cube. If something doesn't work, press **📋 Copy log** and paste it to Chad, or **💾 Save log…** and send him the file. |
+| ⚙️ Settings | **Cube orientation:** if animations look tipped over, turned, upside down or mirrored, fix it here once. Each change shows a test pattern (blue floor, green wall facing you, red edge on the left). |
+| 🔍 Debug | Shows every message sent to and from the cube. If something doesn't work, press **📋 Copy log** and paste it to Chad, or **💾 Save log…** and send him the file. |
 
 ### Smoothness and speed
 
@@ -52,18 +53,12 @@ Tittle server, which is now shut down. Two places may still have them:
 1. **The cube.** In ♻️ Originals, press **What is it playing now?**. If the cube is playing
    an old mood, this shows the mood's number, and **Play stored** brings it back. **Scan**
    searches a range of numbers for other moods the cube has saved.
-2. **An old phone that had the Tittle app.**
-   - **iPhone (no jailbreak needed):** connect it to a computer and make a backup with
-     **Encrypt local backup turned off**. Use Finder on a Mac, or iTunes / the Apple Devices app on Windows.
-     Then, in ♻️ Originals, press **📱 Open iPhone backup…** and pick the backup folder:
-     - Mac: `~/Library/Application Support/MobileSync/Backup/<long ID>`
-     - Windows: `%APPDATA%\Apple Computer\MobileSync\Backup\<long ID>` or `%USERPROFILE%\Apple\MobileSync\Backup\<long ID>`
+2. **An old phone that had the Tittle app.** It kept a copy of everything it downloaded.
+   - **iPhone:** see [`IPHONE_GUIDE.md`](IPHONE_GUIDE.md) for where to look in a backup yourself. This app never reads backups.
+   - **Android:** the app's `tittle.db` needs a rooted phone or an adb backup.
 
-     The app finds the Tittle app's files in the backup, lists any animations it can read, and
-     offers to copy the raw files out. Press **💾 Save all…** to keep every animation as JSON, so you
-     don't need the phone again. If something is missing, zip the copied files and send them to Chad.
-   - **Android:** the app's `tittle.db` needs a rooted phone or an adb backup. Open it with
-     **Open tittle.db…**.
+   Once you've copied a database file out, open it with **📂 Open app database…** to play the
+   animations, then **💾 Save all…** to keep them as JSON.
 
 ## Other things in this kit
 
@@ -80,18 +75,23 @@ Tittle server, which is now shut down. Two places may still have them:
   double-click apps from the Python file. Run the `.bat` on Windows or `bash build_mac.sh`
   on a Mac. The result appears in `desktop-app/dist/`.
 
+## Windows tips
+
+- Closing the window hides the app to the **system tray** (by the clock). Right-click its icon to
+  show it again, turn the cube off, or **Quit**.
+
 ## Windows Defender
 
 Apps made from Python files are sometimes flagged as a "Trojan" by mistake, because malware
-authors use the same packaging tool. Since r7 the Windows app is built in a way that avoids
-most of these false alarms. If Defender still quarantines it:
+authors use the same packaging tool. Since r7 the Windows app is a folder built in a way that avoids
+most of these false alarms. The old single-file `.exe` from r6 is the one Defender flagged, so don't use it. If Defender still quarantines it:
 - run the Python file instead (see above), which never triggers this, or
 - restore it from **Windows Security → Protection history → Allow**, and report the false
   positive to Microsoft at https://www.microsoft.com/wdsi/filesubmission so it gets cleared for everyone.
 
 ## Good to know
 
-- The window title shows the app version. This kit is **2026.11.08-r8**. See `CHANGELOG.md` for what changed in each version. If you see no ⏰ Schedule tab,
+- The window title shows the app version. This kit is **2026.11.09-r9**. See `CHANGELOG.md` for what changed in each version. If you see no ⏰ Schedule tab,
   you are running an older copy: delete it and use the one in this kit.
 - Nothing here has been tested on a real cube yet, only on a simulator. If something
   misbehaves, the 🔍 Debug tab shows what the cube replied.

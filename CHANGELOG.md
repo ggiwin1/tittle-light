@@ -2,6 +2,26 @@
 
 The version is shown in the desktop app's window title. Newest first.
 
+## 2026.11.09-r9
+
+- **New ⚙️ Settings tab with cube orientation:** tilt forward 0/90/180/270°, turn 0/90/180/270°,
+  upside down and mirror. Every change shows the test pattern on the cube right away and is
+  remembered. The default is the r8 layout that Ben confirmed, and *Reset to default* gets back to it.
+- **Sharp on high-DPI Windows screens:** both the Windows app and the Python file now tell Windows
+  they handle scaling themselves, so the window is no longer blurry. The cube preview scales with it.
+- **System tray (Windows app):** closing the window hides it to the tray, and the cube and live
+  clock keep running. Right-click the tray icon for *Show*, *Turn the cube off* or *Quit*. The footer
+  has *Close to tray* (on by default) and a *Quit* button. The Python file gets the tray too if
+  `pip install pystray pillow` is installed.
+- **Fairies toned down:** it's now a normal card in **✨ 3D Presets** (renamed from "3D & Fairies").
+- **The cube's memory across sessions:** the app now remembers which animations the cube confirmed
+  it stored. If the cube later asks for one again, the Debug log says the cube dropped it (the cube
+  decides what it keeps, for example after a power cut or once it is full). It doesn't happen because
+  the app changed.
+- **No more iPhone backup reading:** the *Open iPhone backup* button is gone. `IPHONE_GUIDE.md`
+  explains where to look yourself. **📂 Open app database…** opens a single database file you copied
+  out, and works with Core Data `.sqlite` files as well as Android's `tittle.db`.
+
 ## 2026.11.08-r8
 
 - **Live clock no longer takes over:** playing any preset, colour, stored mood or Off now stops the
