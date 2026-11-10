@@ -2,6 +2,25 @@
 
 The version is shown in the desktop app's window title. Newest first.
 
+## 2026.11.10-r10
+
+- **Loading screen:** the Windows app shows a *Tittle Light / Loading…* window straight away, so you
+  know it's starting during the few seconds it takes to open.
+- **Brightness for everything:** the ☀ slider at the top changes the brightness of whatever is
+  playing (presets, saved presets, clock, lamp). Animations the cube already has only get a short
+  message, so it's quick. It doesn't switch the cube on if it's off.
+- **Tray menu:** right-click the tray icon for **On** (brings back what was playing before Off),
+  **Off**, every look-alike and 3D preset, and your ⭐ Saved presets.
+- **4D Tesseract rebuilt:** it's now a real hypercube wireframe turning slowly in 4D, with soft
+  lines. It changes about a third as much from frame to frame, so it no longer flickers.
+- **Saved presets show their name:** the top bar says *Playing 'Name'* instead of the ID.
+- **Scan finds more:** the defaults are now IDs 1 to 6000 and versions 1 to 6 (Ben's mood is
+  ID 5284 version 4). The scan shows its progress and the time left, and adds every hit to
+  ⭐ Saved presets. After **What is it playing now?** the range is set to the 1000 IDs around it.
+- **Timers:** the button is now *Ask the cube for its timers*. Ben's cube doesn't answer this
+  question (the official app never asked it either), so it now gives up after 1.5 seconds and says
+  so. The saved schedule still works: the cube confirms each timer when it's saved.
+
 ## 2026.11.09-r9
 
 - **New ⚙️ Settings tab with cube orientation:** tilt forward 0/90/180/270°, turn 0/90/180/270°,

@@ -89,7 +89,7 @@ if getattr(sys, "frozen", False):   # packaged .exe / .app: keep settings in the
 else:
     CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tittle_config.json")
 
-APP_VERSION = "2026.11.09-r9"
+APP_VERSION = "2026.11.10-r10"
 FRAME_BYTES = 512 * 3
 OPCODE_PAINT = 0x90
 OPCODE_MOOD = 0x50
@@ -335,6 +335,7 @@ class TittleClient:
         self.fw_version = None          # (high, low) from the 60 02 status reply
         self.last_action = None         # (method name, args, kwargs) of the last thing shown on the cube
         self.on_user_action = None      # called with (method, args) whenever something new is shown
+        self.last_on_action = None      # the last thing shown that wasn't "off" (for the tray's On)
         # "chunks" (0x21-0x23) is what worked on Ben's cube in the first real test (2026-11-08).
         # "compressed" (0x25) is what the official app uses on firmware 2.5+; "auto" follows the app's rule.
         self.upload_format = read_config(config_file).get("upload_format", "chunks")
@@ -534,6 +535,8 @@ class TittleClient:
 
     def _remember(self, method, *args, **kwargs):
         self.last_action = (method, args, kwargs)
+        if not (method == "set_solid_color" and (not any(args[:3]) or (len(args) > 3 and not args[3]))):
+            self.last_on_action = self.last_action
         if self.on_user_action:
             try:
                 self.on_user_action(method, args)
@@ -798,8 +801,8 @@ class TittleClient:
         finally:
             s.close()
 
-    def play_stored(self, anim_id, version=1, opcode=OPCODE_MOOD, intensity=255):
-        self._remember("play_stored", anim_id, version, opcode, intensity)
+    def play_stored(self, anim_id, version=1, opcode=OPCODE_MOOD, intensity=255, name=None):
+        self._remember("play_stored", anim_id, version, opcode, intensity, name=name)
         if not self.ip:
             self.log("[ERROR] No IP configured.")
             return
@@ -813,7 +816,7 @@ class TittleClient:
                 self.log(f"RX ◀── {hexdump(resp) if resp else '[no reply]'}")
                 if ok:
                     self.log(f"[+] The cube has ID {anim_id} v{version} stored and is playing it.")
-                    self.status_callback(f"Playing stored animation {anim_id}", "#10b981")
+                    self.status_callback(f"Playing '{name}'" if name else f"Playing stored animation {anim_id}", "#10b981")
                 else:
                     self.log(f"[-] ID {anim_id} v{version} is not stored on the cube (it asked for the data).")
                     self.status_callback(f"ID {anim_id} not stored on cube", "#f59e0b")
@@ -832,6 +835,7 @@ class TittleClient:
             hits = []
             total = (last - first + 1) * len(versions)
             self.log(f"[*] Scanning IDs {first}-{last}, versions {list(versions)}, type 0x{opcode:02X} ({total} probes)")
+            started = time.time()
             with self.lock:
                 n = 0
                 for anim_id in range(first, last + 1):
@@ -847,9 +851,12 @@ class TittleClient:
                             self.log(f"[+] Found stored animation: ID {anim_id}, version {ver}")
                             if on_hit:
                                 on_hit(anim_id, ver)
-                        if n % 10 == 0:
-                            self.status_callback(f"Scanning stored IDs... {n}/{total}, {len(hits)} found", "#3b82f6")
-                        time.sleep(0.05)
+                        if n % 25 == 0:
+                            rate = n / max(0.1, time.time() - started)
+                            left = int((total - n) / max(rate, 0.1))
+                            self.status_callback(f"Scanning stored IDs... ID {anim_id} ({n}/{total}), {len(hits)} found, "
+                                                 f"about {left // 60} min {left % 60} s left", "#3b82f6")
+                        time.sleep(0.01)
             self.log(f"[+] Scan finished: {len(hits)} stored animation(s) found: {hits}")
             self.status_callback(f"Scan finished, {len(hits)} found", "#10b981")
 
@@ -937,12 +944,26 @@ class TittleClient:
         self.active_worker.start()
 
     def query_timers(self, count=10):
-        """81 00 idx: ask the cube for its stored timers (replies are 15 or 29 bytes)."""
+        """81 00 idx asks for stored timers. The official app has this packet but never sends it, and
+        Ben's cube does not answer it, so: ask slot 0 with a short wait and stop at the first silence."""
         found = []
+        if not self.ip:
+            self.log("[ERROR] No IP configured.")
+            return found
         for idx in range(count):
-            resp = self.send_packet(bytes([0x81, 0x00, idx & 0xFF, 0x0D, 0x0A]))
+            resp = None
+            with self.lock:
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(1.5)
+                    s.connect((self.ip, self.TCP_PORT))
+                    self._tx(s, bytes([0x81, 0x00, idx & 0xFF, 0x0D, 0x0A]))
+                    resp = self._rx(s, 64)
+                    s.close()
+                except Exception as e:
+                    self.log(f"[ERROR] {e}")
             if not resp or resp[0] != 0x81:
-                continue
+                break
             if len(resp) >= 15:
                 tid = int.from_bytes(bytes(resp[3:7]), "big")
                 desc = f"slot {idx}: ID {tid}, {resp[7]:02d}-{resp[8]:02d} {resp[9]:02d}:{resp[10]:02d}, enabled {resp[11]}"
@@ -953,7 +974,12 @@ class TittleClient:
                 self.log(f"[+] Timer {desc}")
                 found.append(desc)
         if not found:
-            self.log("[-] No timers reported (or the cube does not answer 0x81 queries).")
+            self.log("[i] This cube doesn't report its timers (the official app never asked either). That does not "
+                     "mean the timers are missing: the cube said OK when they were saved, and they keep working "
+                     "with the app closed.")
+            sched = read_config(self.config_file).get("schedule")
+            if sched:
+                self.log(f"[i] What this app last saved to the cube: {sched}")
         return found
 
     @staticmethod
@@ -1318,22 +1344,29 @@ class All3DGenerators:
                                 All3DGenerators._put(buf, x, y, z, col, v)
         return buf
 
-    # 8. 4D TESSERACT
+    # 8. 4D TESSERACT: a real hypercube wireframe rotating in 4D, drawn with soft sub-voxel lines
+    TESS_VERTS = [tuple((1 if (n >> k) & 1 else -1) for k in range(4)) for n in range(16)]
+    TESS_EDGES = [(a, b) for a in range(16) for b in range(a + 1, 16) if bin(a ^ b).count("1") == 1]
+
     @staticmethod
     def tesseract(t, f, total):
         buf = bytearray(512 * 3)
-        phase = (f / total) * 2 * math.pi
-        w_offset = math.sin(phase) * 2.0
-        for z in range(8):
-            for y in range(8):
-                for x in range(8):
-                    d = abs(math.sin((x - 3.5) * 0.5 + (y - 3.5) * 0.5 + (z - 3.5) * 0.5 + w_offset))
-                    inner = 1 - All3DGenerators._smooth(d, 0.12, 0.28)
-                    outer = 1 - All3DGenerators._smooth(d, 0.28, 0.45)
-                    if inner > 0.05:
-                        All3DGenerators._put(buf, x, y, z, (180, 60, 255), inner)
-                    elif outer > 0.05:
-                        All3DGenerators._put(buf, x, y, z, (40, 160, 240), outer)
+        a = (f / total) * 2 * math.pi                  # one full 4D turn per loop, so the loop is seamless
+        ca, sa, cb, sb = math.cos(a), math.sin(a), math.cos(a * 2), math.sin(a * 2)
+        pts = []
+        for x, y, z, w in All3DGenerators.TESS_VERTS:
+            x, w = x * ca - w * sa, x * sa + w * ca     # rotate in the XW plane
+            y, z = y * cb - z * sb, y * sb + z * cb     # and slowly in YZ
+            k = 2.4 / (3.2 - w)                         # 4D -> 3D perspective
+            pts.append((3.5 + x * k * 1.25, 3.5 + y * k * 1.25, 3.5 + z * k * 1.25, w))
+        for i, j in All3DGenerators.TESS_EDGES:
+            p, q = pts[i], pts[j]
+            depth = (p[3] + q[3]) / 2                   # inner (far in 4D) cube violet, outer cyan
+            col = (int(110 + 70 * depth), int(110 - 60 * depth), 255)
+            for s in range(9):
+                u = s / 8.0
+                All3DGenerators._splat(buf, p[0] + (q[0] - p[0]) * u, p[1] + (q[1] - p[1]) * u,
+                                       p[2] + (q[2] - p[2]) * u, col, 0.85)
         return buf
 
     # 10. DNA DOUBLE HELIX
@@ -1539,7 +1572,7 @@ class All3DGenerators:
 # Smoothness (r5). Each preset has a natural loop length; the app fits as many frames into it as the
 # chosen smoothness allows. More frames = smoother motion but a longer upload.
 LOOP_SECONDS = {"fairies": 8.0, "fire": 3.0, "wave": 4.0, "rain": 3.0, "snow": 8.0, "sparkle": 4.0,
-                "fireworks": 4.0, "vortex": 3.0, "matrix_rain": 4.0, "tesseract": 4.0, "jellyfish": 4.0,
+                "fireworks": 4.0, "vortex": 3.0, "matrix_rain": 4.0, "tesseract": 8.0, "jellyfish": 4.0,
                 "dna": 4.0, "acoustic": 3.0, "aurora": 6.0, "lava_lamp": 10.0, "galaxy": 8.0, "heartbeat": 1.6,
                 "warp_speed": 2.0, "plasma": 8.0, "bouncing_balls": 6.0, "rainbow_spin": 4.0, "pizza": 2.0,
                 "sunset": 10.0, "constellation": 6.0, "snow_globe": 8.0, "confetti": 5.0}
@@ -2020,9 +2053,11 @@ class TittleDesktopApp:
         self.preview_playing = True
         self.preview_job = None
 
-        self._setup_tray()
+        self.preset_registry = []        # (title, generator) for every preset card, used by the tray menu
+        self._setup_tray_var()
         self._build_header()
         self._build_tabs()
+        self._setup_tray()
         self._build_footer()
         if initial_ip:
             self.ip_entry.delete(0, tk.END)
@@ -2088,9 +2123,20 @@ class TittleDesktopApp:
         except Exception:
             pass
 
-    def _setup_tray(self):
+    def _setup_tray_var(self):
         self.tray = None
         self.tray_var = tk.BooleanVar(value=bool(read_config(self.client.config_file).get("close_to_tray", True)))
+
+    def turn_on(self):
+        """Tray 'On': bring back whatever was showing before Off, or the lamp colour."""
+        last = self.client.last_on_action
+        if last:
+            method, args, kwargs = last
+            getattr(self.client, method)(*args, **kwargs)
+        else:
+            self.client.set_solid_color(self.cur_r, self.cur_g, self.cur_b, self.cur_intensity)
+
+    def _setup_tray(self):
         if sys.platform != "win32":
             return
         try:
@@ -2111,10 +2157,29 @@ class TittleDesktopApp:
             img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
             ImageDraw.Draw(img).rectangle((8, 8, 56, 56), fill=(56, 189, 248, 255))
         post = lambda fn: (lambda icon=None, item=None: self.events.put(("call", fn)))
-        menu = pystray.Menu(
-            pystray.MenuItem("Show Tittle Light", post(self.show_window), default=True),
-            pystray.MenuItem("Turn the cube off", lambda icon=None, item=None: self._bg(self.client.turn_off)),
-            pystray.MenuItem("Quit", post(self.quit_app)))
+        Item, Menu = pystray.MenuItem, pystray.Menu
+
+        def preset_items(group):
+            return [Item(title, post(lambda t=title, g=gen: self.play_generator(t, g)))
+                    for grp, title, gen in self.preset_registry if grp == group]
+
+        def saved_items():
+            items = [Item(p["name"], post(lambda p=p: self.client.play_stored(
+                p["id"], p["version"], p.get("opcode", OPCODE_MOOD), self.cur_intensity, name=p["name"])))
+                for p in self._saved_presets()]
+            return items or [Item("(none saved yet)", None, enabled=False)]
+
+        menu = Menu(
+            Item("Show Tittle Light", post(self.show_window), default=True),
+            Menu.SEPARATOR,
+            Item("On", post(self.turn_on)),
+            Item("Off", post(lambda: self._bg(self.client.turn_off))),
+            Menu.SEPARATOR,
+            Item("Look-alike moods", Menu(lambda: preset_items("look"))),
+            Item("3D presets", Menu(lambda: preset_items("3d"))),
+            Item("⭐ Saved presets", Menu(saved_items)),
+            Menu.SEPARATOR,
+            Item("Quit", post(self.quit_app)))
         try:
             self.tray = pystray.Icon("TittleLight", img, "Tittle Light", menu)
             self.tray.run_detached()
@@ -2174,6 +2239,13 @@ class TittleDesktopApp:
         btn_sniff = tk.Button(conn_frame, text="🔍 Sniff / Connect", bg="#2563eb", fg="white", activebackground="#1d4ed8",
                               font=("Segoe UI", 9, "bold"), bd=0, padx=10, pady=4, cursor="hand2", command=self.on_click_sniff)
         btn_sniff.pack(side=tk.LEFT, padx=4)
+
+        tk.Label(conn_frame, text="☀", font=("Segoe UI", 11), fg="#fbbf24", bg="#1e293b").pack(side=tk.LEFT, padx=(10, 0))
+        self.bright_scale = tk.Scale(conn_frame, from_=10, to=255, orient=tk.HORIZONTAL, length=int(120 * self.ui_scale),
+                                     showvalue=False, bg="#1e293b", highlightthickness=0, troughcolor="#0f172a")
+        self.bright_scale.set(self.cur_intensity)
+        self.bright_scale.bind("<ButtonRelease-1>", lambda e: self.apply_brightness(self.bright_scale.get()))
+        self.bright_scale.pack(side=tk.LEFT, padx=(2, 8))
 
         btn_off = tk.Button(conn_frame, text="⭕ Off", bg="#dc2626", fg="white", activebackground="#b91c1c",
                             font=("Segoe UI", 9, "bold"), bd=0, padx=8, pady=4, cursor="hand2", command=self.on_click_off)
@@ -2384,7 +2456,35 @@ class TittleDesktopApp:
         self.cur_g = self.slider_g.get()
         self.cur_b = self.slider_b.get()
         self.cur_intensity = self.slider_intensity.get()
+        if hasattr(self, "bright_scale") and self.bright_scale.get() != self.cur_intensity:
+            self.bright_scale.set(self.cur_intensity)
         self.color_box.configure(bg=f"#{self.cur_r:02x}{self.cur_g:02x}{self.cur_b:02x}")
+
+    # Where each remembered action keeps its intensity argument
+    INTENSITY_ARG = {"set_solid_color": 3, "upload_frames": 3, "play_stored": 3, "sync_clock": 1, "set_music_mode": 2}
+
+    def apply_brightness(self, value):
+        """Brightness works for everything: re-send whatever is showing with the new intensity.
+        Animations the cube already has only need their header again, so this is quick."""
+        value = int(value)
+        self.cur_intensity = value
+        try:
+            self.slider_intensity.set(value)
+        except Exception:
+            pass
+        last = self.client.last_action
+        if not last or not self.client.ip:
+            return
+        method, args, kwargs = last
+        pos = self.INTENSITY_ARG.get(method)
+        if pos is None or len(args) <= pos:
+            return
+        if method == "set_solid_color" and not any(args[:3]):
+            return                                   # the cube is off; don't switch it on
+        args = list(args)
+        args[pos] = value
+        self.client.log(f"[*] Brightness {value}: re-sending {method}")
+        getattr(self.client, method)(*args, **kwargs)
 
     def send_cur_lamp(self):
         threading.Thread(target=lambda: self.client.set_solid_color(
@@ -2419,6 +2519,7 @@ class TittleDesktopApp:
             ("🎊 Confetti", All3DGenerators.confetti, 90, "Bright confetti in every colour tumbling down"),
         ]
 
+        self.preset_registry += [("look", n, g) for n, g, _i, _d in presets]
         for i, (name, gen_func, interval, desc) in enumerate(presets):
             card = tk.Frame(grid, bg="#1e293b", padx=10, pady=6, bd=1, relief=tk.FLAT)
             card.grid(row=i // 3, column=i % 3, sticky="nsew", padx=4, pady=3)
@@ -2466,6 +2567,7 @@ class TittleDesktopApp:
             ("🆕 🌈 Rainbow Spin", All3DGenerators.rainbow_spin, 80, "A rainbow wheel spinning round the cube", 24),
         ]
 
+        self.preset_registry += [("3d", t.replace("🆕 ", ""), g) for t, g, _i, _d, _n in generators]
         for idx, (title, func, itv, desc, nframes) in enumerate(generators):
             card = tk.Frame(novel_grid, bg="#1e293b", padx=10, pady=3)
             card.grid(row=idx // 3, column=idx % 3, sticky="nsew", padx=4, pady=3)
@@ -2821,7 +2923,7 @@ class TittleDesktopApp:
         btn(r, "Play stored", self.on_play_stored, "#10b981").pack(side=tk.LEFT, padx=6)
 
         r = tk.Frame(c1, bg="#1e293b"); r.pack(fill=tk.X, pady=(8, 0))
-        self.sc_from, self.sc_to, self.sc_vers = tk.StringVar(value="1"), tk.StringVar(value="200"), tk.StringVar(value="1-3")
+        self.sc_from, self.sc_to, self.sc_vers = tk.StringVar(value="1"), tk.StringVar(value="6000"), tk.StringVar(value="1-6")
         lab(r, "Scan IDs").pack(side=tk.LEFT); entry(r, self.sc_from, 5).pack(side=tk.LEFT, padx=2)
         lab(r, "to").pack(side=tk.LEFT); entry(r, self.sc_to, 5).pack(side=tk.LEFT, padx=2)
         lab(r, "versions").pack(side=tk.LEFT); entry(r, self.sc_vers, 5).pack(side=tk.LEFT, padx=2)
@@ -2833,8 +2935,10 @@ class TittleDesktopApp:
         self.hits_list.pack(fill=tk.X)
         self.hits_list.bind("<Double-Button-1>", lambda e: self.on_play_hit())
         tk.Label(c1, wraplength=440, justify=tk.LEFT, font=("Segoe UI", 8), fg="#94a3b8", bg="#1e293b",
-                 text="Experimental: the scan sends a mood header per ID. A stored ID starts playing; any other ID "
-                      "is answered with 'data not ready' and dropped. Untested on real hardware.").pack(anchor=tk.W, pady=(6, 0))
+                 text="The scan tries every ID and version in the range; a stored one starts playing and is added to "
+                      "⭐ Saved presets automatically. Tip: 'What is it playing now?' sets the range to 500 IDs either "
+                      "side of the current one, where its siblings most likely are. The full default range takes a while; "
+                      "the status bar shows the time left.").pack(anchor=tk.W, pady=(6, 0))
 
         # saved cube presets
         c3 = card(left, "⭐ Saved presets (stored on the cube)")
@@ -2880,6 +2984,9 @@ class TittleDesktopApp:
                     self.mode_lbl.configure(text=f"  {info['mode_name']} · ID {info['anim_id']} · byte10={info['raw'][10]}"),
                     self.st_id.set(str(info["anim_id"])),
                     self.st_ver.set(str(info["raw"][10] or 1)),
+                    self.sc_from.set(str(max(1, info["anim_id"] - 500))),
+                    self.sc_to.set(str(info["anim_id"] + 500)),
+                    self.sc_vers.set(f"1-{max(6, (info['raw'][10] or 1) + 2)}"),
                     self._fill_mode_ids(info),
                     self.st_type.set(OPCODE_MOOD if info["mode"] == 0x50 else 0x20))))
             else:
@@ -2941,7 +3048,7 @@ class TittleDesktopApp:
         i, presets = self._selected_saved()
         if i is not None:
             p = presets[i]
-            self.client.play_stored(p["id"], p["version"], p.get("opcode", OPCODE_MOOD), self.cur_intensity)
+            self.client.play_stored(p["id"], p["version"], p.get("opcode", OPCODE_MOOD), self.cur_intensity, name=p["name"])
 
     def on_rename_saved(self):
         i, presets = self._selected_saved()
@@ -2977,9 +3084,16 @@ class TittleDesktopApp:
             return
         self.hits_list.delete(0, tk.END)
         opcode = self.st_type.get()
-        self.client.scan_stored(first, last, versions, opcode, self.cur_intensity,
-                                on_hit=lambda i, v: self.events.put(("call", lambda: self.hits_list.insert(
-                                    tk.END, f"ID {i:<6} version {v:<3} {'Mood' if opcode == OPCODE_MOOD else 'Emoji'}"))))
+        def hit(i, v):
+            def ui():
+                self.hits_list.insert(tk.END, f"ID {i:<6} version {v:<3} {'Mood' if opcode == OPCODE_MOOD else 'Emoji'}")
+                presets = self._saved_presets()
+                if not any(p["id"] == i and p["version"] == v for p in presets):
+                    presets.append({"name": f"Found ID {i} v{v}", "id": i, "version": v, "opcode": opcode})
+                    update_config(self.client.config_file, stored_presets=presets)
+                    self._refresh_saved()
+            self.events.put(("call", ui))
+        self.client.scan_stored(first, last, versions, opcode, self.cur_intensity, on_hit=hit)
 
     def on_play_hit(self):
         sel = self.hits_list.curselection()
@@ -3091,12 +3205,14 @@ class TittleDesktopApp:
                  bg="#1e293b").pack(anchor=tk.W, pady=(4, 0))
 
         r = tk.Frame(self.tab_sched, bg="#0f172a"); r.pack(fill=tk.X, pady=12)
-        btn(r, "📋 Read timers stored on the cube", lambda: self._bg(self.client.query_timers, 10)).pack(side=tk.LEFT)
-        tk.Label(r, text="  Results appear in the 🔍 Debug tab.", font=("Segoe UI", 9), fg="#94a3b8", bg="#0f172a").pack(side=tk.LEFT)
+        btn(r, "📋 Ask the cube for its timers", lambda: self._bg(self.client.query_timers, 10)).pack(side=tk.LEFT)
+        tk.Label(r, text="  Results appear in the 🔍 Debug tab. Ben's cube doesn't answer this (the official app "
+                         "never used it), so the app shows what it last saved instead.",
+                 font=("Segoe UI", 9), fg="#94a3b8", bg="#0f172a").pack(side=tk.LEFT)
         tk.Label(self.tab_sched, wraplength=980, justify=tk.LEFT, font=("Segoe UI", 8), fg="#64748b", bg="#0f172a",
                  text="Packet layouts come from the official app's CommandUtils (switch-off 22 bytes, lamp 30, animation 38). "
                       "Not yet tried on a real cube: after saving, check that the cube answers with a positive ACK in the "
-                      "Debug tab, and use Read timers to confirm.").pack(anchor=tk.W)
+                      "Debug tab.").pack(anchor=tk.W)
 
     def _hm(self, hv, mv):
         h, m = max(0, min(23, int(hv.get()))), max(0, min(59, int(mv.get())))
@@ -3545,6 +3661,23 @@ class TittleDesktopApp:
 # ==============================================================================
 # MAIN ENTRY POINT
 # ==============================================================================
+def show_loading_window(root):
+    """A small 'Loading…' window while the main window is being built (it takes a few seconds)."""
+    try:
+        w = tk.Toplevel(root)
+        w.overrideredirect(True)
+        w.configure(bg="#0f172a", highlightthickness=1, highlightbackground="#38bdf8")
+        tk.Label(w, text="✨ Tittle Light", font=("Segoe UI", 16, "bold"), fg="#f8fafc", bg="#0f172a").pack(padx=40, pady=(24, 4))
+        tk.Label(w, text="Loading…", font=("Segoe UI", 10), fg="#38bdf8", bg="#0f172a").pack(pady=(0, 24))
+        w.update_idletasks()
+        sw, sh = w.winfo_screenwidth(), w.winfo_screenheight()
+        w.geometry(f"+{(sw - w.winfo_reqwidth()) // 2}+{(sh - w.winfo_reqheight()) // 2}")
+        w.update()
+        return w
+    except Exception:
+        return None
+
+
 def enable_dpi_awareness():
     """Sharp text on high-DPI Windows screens (otherwise Windows stretches a blurry 96-DPI window)."""
     if sys.platform != "win32":
@@ -3568,7 +3701,17 @@ def main(argv=None):
         return 1
     enable_dpi_awareness()
     root = tk.Tk()
+    root.withdraw()
+    splash = show_loading_window(root)
+    try:
+        import pyi_splash                    # the Windows app's own splash (shown before Python starts)
+        pyi_splash.close()
+    except Exception:
+        pass
     TittleDesktopApp(root, initial_ip=args.ip)
+    if splash:
+        splash.destroy()
+    root.deiconify()
     root.mainloop()
     return 0
 

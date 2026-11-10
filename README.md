@@ -27,7 +27,7 @@ shows the cube's IP.
 
 | Tab | What it does |
 | --- | --- |
-| 💡 Lamp | Any solid colour and brightness. The red **Off** button is at the top. |
+| 💡 Lamp | Any solid colour. The red **Off** button is at the top, next to the ☀ **brightness** slider, which works for everything the cube is showing. |
 | 🎨 Look-alikes | Fireplace, Wave, Rain, Snow, Sparkle, Fireworks, Vortex, plus Sunset, Constellation, Snow Globe and Confetti (names from the original Indiegogo campaign). These are **not** the real originals, only look-alikes (see "Original animations" below). |
 | ✨ 3D Presets | New 3D effects (not originals): Tesseract, Fairies, Jellyfish, DNA, Matrix Rain, Acoustic Ripple, Aurora, Lava Lamp, Spiral Galaxy, Heartbeat, Warp Speed, Plasma, Bouncing Balls, Rainbow Spin. |
 | ⏰ Schedule | Turns the cube **off every night** and **back on every morning**. The timer is saved on the cube, so it works with the app closed. |
@@ -52,7 +52,9 @@ Tittle server, which is now shut down. Two places may still have them:
 
 1. **The cube.** In ♻️ Originals, press **What is it playing now?**. If the cube is playing
    an old mood, this shows the mood's number, and **Play stored** brings it back. **Scan**
-   searches a range of numbers for other moods the cube has saved.
+   searches a range of numbers (IDs 1 to 6000, versions 1 to 6 by default) for other moods the
+   cube has saved. Each one it finds is added to ⭐ Saved presets. A full scan takes a while, so
+   after *What is it playing now?* the range is narrowed to the numbers around the current mood.
 2. **An old phone that had the Tittle app.** It kept a copy of everything it downloaded.
    - **iPhone:** see [`IPHONE_GUIDE.md`](IPHONE_GUIDE.md) for where to look in a backup yourself. This app never reads backups.
    - **Android:** the app's `tittle.db` needs a rooted phone or an adb backup.
@@ -78,7 +80,7 @@ Tittle server, which is now shut down. Two places may still have them:
 ## Windows tips
 
 - Closing the window hides the app to the **system tray** (by the clock). Right-click its icon to
-  show it again, turn the cube off, or **Quit**.
+  show it again, turn the cube **On** or **Off**, play any preset or saved preset, or **Quit**.
 
 ## Windows Defender
 
@@ -91,7 +93,7 @@ most of these false alarms. The old single-file `.exe` from r6 is the one Defend
 
 ## Good to know
 
-- The window title shows the app version. This kit is **2026.11.09-r9**. See `CHANGELOG.md` for what changed in each version. If you see no ⏰ Schedule tab,
+- The window title shows the app version. This kit is **2026.11.10-r10**. See `CHANGELOG.md` for what changed in each version. If you see no ⏰ Schedule tab,
   you are running an older copy: delete it and use the one in this kit.
 - Nothing here has been tested on a real cube yet, only on a simulator. If something
   misbehaves, the 🔍 Debug tab shows what the cube replied.
