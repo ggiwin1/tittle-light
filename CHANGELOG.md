@@ -2,6 +2,20 @@
 
 The version is shown in the desktop app's window title. Newest first.
 
+## 2026.11.11-r11
+
+- **Wi-Fi setup for a new or reset cube:** ⚙ Settings → *Connect a reset cube to Wi-Fi*. Join this
+  computer to the cube's own `Tittle-AP` network, type your home Wi-Fi name and password, and press
+  **Send to cube**. It uses the same steps as the official app's standard setup. The password goes only
+  to the cube: it isn't saved and doesn't appear in the Debug log. Not yet tried on a real reset cube.
+- **Originals tidied up:** *What is it playing now?*, *Play a stored ID* and *Scan* are now three
+  separate boxes. ⭐ Saved presets moved to the right column. Every list is taller, has a scroll bar,
+  and plays the selected item when you press **Enter**.
+- **Tesseract is bigger:** the outer cube now fills the whole 8×8×8, with the inner cube inside it.
+- **Tab names:** removed the hidden character that left a gap after the 🖼 Picture, ♻ Originals and
+  ⚙ Settings icons on Windows.
+- **Schedule:** removed *Ask the cube for its timers*, because the cube can't answer it.
+
 ## 2026.11.10-r10
 
 - **Loading screen:** the Windows app shows a *Tittle Light / Loading…* window straight away, so you

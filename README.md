@@ -36,7 +36,7 @@ shows the cube's IP.
 | ♻️ Originals | Tools for finding the original animations (see below). |
 | 🕒 Clock | **Live clock** (uses the computer's time; playing anything else stops it) in 12-hour (a purple bar on top means PM) or 24-hour time. The app draws the time and updates it every minute while the app is open, or a clock face the cube still has saved from the old app. |
 | 🎵 Music | Starts a visualizer the cube still has saved from the old app. The new visualizers were never in the phone app, so this only works if the cube kept one. |
-| ⚙️ Settings | **Cube orientation:** if animations look tipped over, turned, upside down or mirrored, fix it here once. Each change shows a test pattern (blue floor, green wall facing you, red edge on the left). |
+| ⚙️ Settings | **Wi-Fi setup** for a new or reset cube (join its `Tittle-AP` network first). **Cube orientation:** if animations look tipped over, turned, upside down or mirrored, fix it here once. Each change shows a test pattern (blue floor, green wall facing you, red edge on the left). |
 | 🔍 Debug | Shows every message sent to and from the cube. If something doesn't work, press **📋 Copy log** and paste it to Chad, or **💾 Save log…** and send him the file. |
 
 ### Smoothness and speed
@@ -93,7 +93,7 @@ most of these false alarms. The old single-file `.exe` from r6 is the one Defend
 
 ## Good to know
 
-- The window title shows the app version. This kit is **2026.11.10-r10**. See `CHANGELOG.md` for what changed in each version. If you see no ⏰ Schedule tab,
+- The window title shows the app version. This kit is **2026.11.11-r11**. See `CHANGELOG.md` for what changed in each version. If you see no ⏰ Schedule tab,
   you are running an older copy: delete it and use the one in this kit.
 - Nothing here has been tested on a real cube yet, only on a simulator. If something
   misbehaves, the 🔍 Debug tab shows what the cube replied.

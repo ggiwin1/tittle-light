@@ -89,7 +89,7 @@ if getattr(sys, "frozen", False):   # packaged .exe / .app: keep settings in the
 else:
     CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tittle_config.json")
 
-APP_VERSION = "2026.11.10-r10"
+APP_VERSION = "2026.11.11-r11"
 FRAME_BYTES = 512 * 3
 OPCODE_PAINT = 0x90
 OPCODE_MOOD = 0x50
@@ -943,6 +943,88 @@ class TittleClient:
         self.active_worker = threading.Thread(target=_worker, daemon=True)
         self.active_worker.start()
 
+    SETUP_AP_SSID = "Tittle-AP"
+    SETUP_AP_IP = "192.168.1.1"
+    SETUP_CALLBACK_PORT = None          # the cube calls back on 9999 (tests use another port)
+
+    @staticmethod
+    def build_wifi_config_packet(ssid, password, my_ip):
+        """70 07 <ssid> 00 <password> 00 <this computer's IP, 4 bytes> 0D 0A (official app: onCreateStandardConfigPacket)."""
+        ip = bytes(int(p) & 0xFF for p in my_ip.split("."))
+        return bytes([0x70, 0x07]) + ssid.encode("utf-8") + b"\x00" + password.encode("utf-8") + b"\x00" + ip + b"\r\n"
+
+    def wifi_setup(self, ssid, password, wait_s=40):
+        """Give a reset cube the home Wi-Fi. This computer must be connected to the cube's own open network
+        'Tittle-AP' first. Same steps as the official app: send the Wi-Fi name and password to 192.168.1.1, wait
+        for the cube to call back with its details, then tell it setup is finished (70 09)."""
+        ap, port = self.SETUP_AP_IP, self.TCP_PORT
+        try:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            probe.connect((ap, port))
+            my_ip = probe.getsockname()[0]
+            probe.close()
+        except Exception as e:
+            self.log(f"[ERROR] Can't reach {ap}: {e}")
+            return False, "This computer isn't connected to the cube's 'Tittle-AP' Wi-Fi."
+        self.log(f"[*] Wi-Fi setup: this computer is {my_ip}, sending '{ssid}' to the cube at {ap}")
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            server.bind(("0.0.0.0", self.SETUP_CALLBACK_PORT or port))
+            server.listen(1)
+        except Exception as e:
+            self.log(f"[!] Couldn't listen on port {port} for the cube's reply ({e}); carrying on anyway")
+            server.close()
+            server = None
+        try:
+            ack = None
+            for attempt in range(3):
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(10)
+                    s.connect((ap, port))
+                    self.log(f"TX ──▶ 70 07 <Wi-Fi name> 00 <password hidden> 00 <{my_ip}> 0D 0A")
+                    s.sendall(self.build_wifi_config_packet(ssid, password, my_ip))
+                    ack = self._rx(s, 64)
+                    s.close()
+                    break
+                except Exception as e:
+                    self.log(f"[!] Attempt {attempt + 1}: {e}")
+                    time.sleep(1)
+            if not ack:
+                return False, "The cube didn't answer. Check this computer is on 'Tittle-AP' and try again."
+            if not (ack[3] == 0 if len(ack) > 4 else len(ack) > 1 and ack[1] == 0):
+                return False, "The cube refused the Wi-Fi details. Check the name and password."
+            info = None
+            if server:
+                server.settimeout(wait_s)
+                try:
+                    c, addr = server.accept()
+                    c.settimeout(3)
+                    info = self._rx(c, 1024)
+                    c.close()
+                    self.log(f"[+] The cube called back from {addr[0]}")
+                except socket.timeout:
+                    self.log("[!] The cube didn't call back; finishing setup anyway")
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(5)
+                s.connect((ap, port))
+                self._tx(s, bytes([0x70, 0x09, 0x0D, 0x0A]))
+                self._rx(s, 64)
+                s.close()
+            except Exception as e:
+                self.log(f"[i] Finish message not answered ({e}); the cube may already be joining your Wi-Fi")
+            name = ""
+            if info and len(info) > 6:
+                name = info[6:26].split(b"\x00")[0].decode("utf-8", "replace").strip()
+            if info is None:
+                return True, f"The cube accepted the details for '{ssid}' but didn't confirm; give it a minute."
+            return True, (f"'{name}' " if name else "The cube ") + f"has your Wi-Fi details and is joining '{ssid}'."
+        finally:
+            if server:
+                server.close()
+
     def query_timers(self, count=10):
         """81 00 idx asks for stored timers. The official app has this packet but never sends it, and
         Ben's cube does not answer it, so: ask slot 0 with a short wait and stop at the first silence."""
@@ -1358,7 +1440,7 @@ class All3DGenerators:
             x, w = x * ca - w * sa, x * sa + w * ca     # rotate in the XW plane
             y, z = y * cb - z * sb, y * sb + z * cb     # and slowly in YZ
             k = 2.4 / (3.2 - w)                         # 4D -> 3D perspective
-            pts.append((3.5 + x * k * 1.25, 3.5 + y * k * 1.25, 3.5 + z * k * 1.25, w))
+            pts.append((3.5 + x * k * 1.9, 3.5 + y * k * 1.9, 3.5 + z * k * 1.9, w))   # outer cube fills the 8x8x8
         for i, j in All3DGenerators.TESS_EDGES:
             p, q = pts[i], pts[j]
             depth = (p[3] + q[3]) / 2                   # inner (far in 4D) cube violet, outer cyan
@@ -2287,12 +2369,12 @@ class TittleDesktopApp:
 
         # Tab 7: Picture -> light mode (Tittle Image Studio built in)
         self.tab_pic = tk.Frame(self.notebook, bg="#0f172a", padx=15, pady=15)
-        self.notebook.add(self.tab_pic, text="🖼️ Picture")
+        self.notebook.add(self.tab_pic, text="🖼 Picture")
         self._init_picture_tab()
 
         # Tab 8: Recover the official animations
         self.tab_orig = tk.Frame(self.notebook, bg="#0f172a", padx=15, pady=15)
-        self.notebook.add(self.tab_orig, text="♻️ Originals")
+        self.notebook.add(self.tab_orig, text="♻ Originals")
         self._init_originals_tab()
 
         # Tab 8: Hardware on/off schedule
@@ -2302,7 +2384,7 @@ class TittleDesktopApp:
 
         # Settings
         self.tab_settings = tk.Frame(self.notebook, bg="#0f172a", padx=15, pady=15)
-        self.notebook.add(self.tab_settings, text="⚙️ Settings")
+        self.notebook.add(self.tab_settings, text="⚙ Settings")
         self._init_settings_tab()
 
         # Tab 9: Raw Debug Log
@@ -2905,75 +2987,88 @@ class TittleDesktopApp:
         cols.columnconfigure(1, weight=1, uniform="orig")
         cols.rowconfigure(0, weight=1)
 
-        # (1) on the cube
-        c1 = card(left, "1 · Animations stored on the cube")
-        c1.pack(fill=tk.X)
-        r = tk.Frame(c1, bg="#1e293b"); r.pack(fill=tk.X)
-        btn(r, "What is it playing now?", self.on_query_mode, "#2563eb").pack(side=tk.LEFT)
+        def listbox(parent, height, fg):
+            f = tk.Frame(parent, bg="#020617")
+            lb = tk.Listbox(f, height=height, bg="#020617", fg=fg, font=("Consolas", 9), bd=0,
+                            selectbackground="#2563eb", activestyle="none", exportselection=False)
+            sb = tk.Scrollbar(f, orient=tk.VERTICAL, command=lb.yview)
+            lb.configure(yscrollcommand=sb.set)
+            sb.pack(side=tk.RIGHT, fill=tk.Y)
+            lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            return f, lb
+
+        note = lambda parent, t: tk.Label(parent, wraplength=440, justify=tk.LEFT, font=("Segoe UI", 8), fg="#94a3b8",
+                                          bg="#1e293b", text=t)
+
+        # (1) on the cube: three separate tools
+        c_now = card(left, "1 · What is the cube playing now?")
+        c_now.pack(fill=tk.X)
+        r = tk.Frame(c_now, bg="#1e293b"); r.pack(fill=tk.X)
+        btn(r, "🔎 Ask the cube", self.on_query_mode, "#2563eb").pack(side=tk.LEFT)
         self.mode_lbl = lab(r, "  (power the cube on with its last mood first)")
         self.mode_lbl.pack(side=tk.LEFT)
+        note(c_now, "Fills in the ID and version below, and narrows the scan to the IDs around it.").pack(anchor=tk.W, pady=(4, 0))
 
-        r = tk.Frame(c1, bg="#1e293b"); r.pack(fill=tk.X, pady=(8, 0))
+        c_play = card(left, "2 · Play a stored ID")
+        c_play.pack(fill=tk.X, pady=(8, 0))
+        r = tk.Frame(c_play, bg="#1e293b"); r.pack(fill=tk.X)
         self.st_id, self.st_ver, self.st_type = tk.StringVar(value="1"), tk.StringVar(value="1"), tk.IntVar(value=OPCODE_MOOD)
         lab(r, "ID").pack(side=tk.LEFT); entry(r, self.st_id).pack(side=tk.LEFT, padx=4)
         lab(r, "Version").pack(side=tk.LEFT); entry(r, self.st_ver, 4).pack(side=tk.LEFT, padx=4)
         for val, txt in ((OPCODE_MOOD, "Mood"), (0x20, "Emoji")):
             tk.Radiobutton(r, text=txt, variable=self.st_type, value=val, bg="#1e293b", fg="#e2e8f0", selectcolor="#0f172a",
                            activebackground="#1e293b", font=("Segoe UI", 9)).pack(side=tk.LEFT)
-        btn(r, "Play stored", self.on_play_stored, "#10b981").pack(side=tk.LEFT, padx=6)
+        btn(r, "▶ Play stored", self.on_play_stored, "#10b981").pack(side=tk.LEFT, padx=6)
+        btn(r, "⭐ Save", self.on_save_stored, "#a855f7").pack(side=tk.LEFT)
 
-        r = tk.Frame(c1, bg="#1e293b"); r.pack(fill=tk.X, pady=(8, 0))
+        c_scan = card(left, "3 · Scan for stored animations")
+        c_scan.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        r = tk.Frame(c_scan, bg="#1e293b"); r.pack(fill=tk.X)
         self.sc_from, self.sc_to, self.sc_vers = tk.StringVar(value="1"), tk.StringVar(value="6000"), tk.StringVar(value="1-6")
-        lab(r, "Scan IDs").pack(side=tk.LEFT); entry(r, self.sc_from, 5).pack(side=tk.LEFT, padx=2)
+        lab(r, "IDs").pack(side=tk.LEFT); entry(r, self.sc_from, 5).pack(side=tk.LEFT, padx=2)
         lab(r, "to").pack(side=tk.LEFT); entry(r, self.sc_to, 5).pack(side=tk.LEFT, padx=2)
         lab(r, "versions").pack(side=tk.LEFT); entry(r, self.sc_vers, 5).pack(side=tk.LEFT, padx=2)
-        btn(r, "Scan", self.on_scan).pack(side=tk.LEFT, padx=4)
+        btn(r, "Scan", self.on_scan, "#2563eb").pack(side=tk.LEFT, padx=4)
         btn(r, "Stop", lambda: self.client.stop_flag.set(), "#991b1b").pack(side=tk.LEFT)
-        lab(c1, "Found on the cube (double-click to play):").pack(anchor=tk.W, pady=(8, 2))
-        self.hits_list = tk.Listbox(c1, height=4, bg="#020617", fg="#4ade80", font=("Consolas", 9), bd=0,
-                                    selectbackground="#2563eb")
-        self.hits_list.pack(fill=tk.X)
+        note(c_scan, "Every hit starts playing and is added to ⭐ Saved presets. The full default range takes a while; "
+                     "the status bar shows the time left.").pack(anchor=tk.W, pady=(4, 4))
+        lab(c_scan, "Found on the cube (double-click or Enter to play):").pack(anchor=tk.W, pady=(0, 2))
+        f, self.hits_list = listbox(c_scan, 6, "#4ade80")
+        f.pack(fill=tk.BOTH, expand=True)
         self.hits_list.bind("<Double-Button-1>", lambda e: self.on_play_hit())
-        tk.Label(c1, wraplength=440, justify=tk.LEFT, font=("Segoe UI", 8), fg="#94a3b8", bg="#1e293b",
-                 text="The scan tries every ID and version in the range; a stored one starts playing and is added to "
-                      "⭐ Saved presets automatically. Tip: 'What is it playing now?' sets the range to 500 IDs either "
-                      "side of the current one, where its siblings most likely are. The full default range takes a while; "
-                      "the status bar shows the time left.").pack(anchor=tk.W, pady=(6, 0))
+        self.hits_list.bind("<Return>", lambda e: self.on_play_hit())
 
         # saved cube presets
-        c3 = card(left, "⭐ Saved presets (stored on the cube)")
-        c3.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
-        tk.Label(c3, wraplength=440, justify=tk.LEFT, font=("Segoe UI", 8), fg="#94a3b8", bg="#1e293b",
-                 text="Press 'What is it playing now?' while the cube shows an original mood, then '⭐ Save ID above'. "
-                      "The app remembers the ID so one click plays it again. The animation itself stays inside the cube, "
-                      "so a factory reset would erase it; only an old phone's app data holds a full copy.").pack(anchor=tk.W)
+        c3 = card(right, "⭐ Saved presets (stored on the cube)")
+        c3.pack(fill=tk.BOTH, expand=True)
+        note(c3, "One click plays an animation the cube still holds. The animation itself stays inside the cube, "
+                 "so a factory reset would erase it; only an old phone's app data holds a full copy.").pack(anchor=tk.W)
         r = tk.Frame(c3, bg="#1e293b"); r.pack(fill=tk.X, pady=4)
-        btn(r, "⭐ Save ID above", self.on_save_stored, "#a855f7").pack(side=tk.LEFT)
-        btn(r, "▶ Play", self.on_play_saved, "#10b981").pack(side=tk.LEFT, padx=4)
-        btn(r, "✏️ Rename", self.on_rename_saved).pack(side=tk.LEFT)
-        btn(r, "🗑 Delete", self.on_delete_saved, "#991b1b").pack(side=tk.LEFT, padx=4)
-        self.saved_list = tk.Listbox(c3, height=5, bg="#020617", fg="#fde68a", font=("Consolas", 9), bd=0,
-                                     selectbackground="#2563eb")
-        self.saved_list.pack(fill=tk.BOTH, expand=True)
+        btn(r, "▶ Play", self.on_play_saved, "#10b981").pack(side=tk.LEFT)
+        btn(r, "✏️ Rename", self.on_rename_saved).pack(side=tk.LEFT, padx=4)
+        btn(r, "🗑 Delete", self.on_delete_saved, "#991b1b").pack(side=tk.LEFT)
+        lab(c3, "Double-click or Enter to play:").pack(anchor=tk.W, pady=(2, 2))
+        f, self.saved_list = listbox(c3, 8, "#fde68a")
+        f.pack(fill=tk.BOTH, expand=True)
         self.saved_list.bind("<Double-Button-1>", lambda e: self.on_play_saved())
+        self.saved_list.bind("<Return>", lambda e: self.on_play_saved())
         self._refresh_saved()
 
         # (2) old phone database
-        c2 = card(right, "2 · From an old phone's Tittle app")
-        c2.pack(fill=tk.BOTH, expand=True)
-        tk.Label(c2, wraplength=440, justify=tk.LEFT, font=("Segoe UI", 8), fg="#94a3b8", bg="#1e293b",
-                 text="Open a database file you copied out of the old Tittle app yourself: tittle.db from Android, or "
-                      "the .sqlite file from the iPhone app's folder (see IPHONE_GUIDE.md for where to look). The file "
-                      "is only read on this computer. Every animation found appears below.").pack(anchor=tk.W)
+        c2 = card(right, "From an old phone's Tittle app")
+        c2.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        note(c2, "Open a database file you copied out of the old Tittle app yourself: tittle.db from Android, or "
+                 "the .sqlite file from the iPhone app's folder (see IPHONE_GUIDE.md for where to look). The file "
+                 "is only read on this computer.").pack(anchor=tk.W)
         r = tk.Frame(c2, bg="#1e293b"); r.pack(fill=tk.X, pady=6)
         btn(r, "📂 Open app database…", self.on_open_db, "#2563eb").pack(side=tk.LEFT)
         btn(r, "⚡ Play", self.on_play_db, "#10b981").pack(side=tk.LEFT, padx=4)
         btn(r, "💾 Save all…", self.on_export_db).pack(side=tk.LEFT)
-        self.db_list = tk.Listbox(c2, height=12, bg="#020617", fg="#e2e8f0", font=("Consolas", 9), bd=0,
-                                  selectbackground="#2563eb")
-        self.db_list.pack(fill=tk.BOTH, expand=True)
+        f, self.db_list = listbox(c2, 5, "#e2e8f0")
+        f.pack(fill=tk.BOTH, expand=True)
         self.db_list.bind("<<ListboxSelect>>", lambda e: self.on_select_db())
         self.db_list.bind("<Double-Button-1>", lambda e: self.on_play_db())
+        self.db_list.bind("<Return>", lambda e: self.on_play_db())
         self.db_anims = []
 
     def on_query_mode(self):
@@ -3204,11 +3299,8 @@ class TittleDesktopApp:
         tk.Label(morning, text="It stays on until the night-off time.", font=("Segoe UI", 8), fg="#94a3b8",
                  bg="#1e293b").pack(anchor=tk.W, pady=(4, 0))
 
-        r = tk.Frame(self.tab_sched, bg="#0f172a"); r.pack(fill=tk.X, pady=12)
-        btn(r, "📋 Ask the cube for its timers", lambda: self._bg(self.client.query_timers, 10)).pack(side=tk.LEFT)
-        tk.Label(r, text="  Results appear in the 🔍 Debug tab. Ben's cube doesn't answer this (the official app "
-                         "never used it), so the app shows what it last saved instead.",
-                 font=("Segoe UI", 9), fg="#94a3b8", bg="#0f172a").pack(side=tk.LEFT)
+        tk.Label(self.tab_sched, text="The cube can't report which timers it holds, so this tab shows what the app last saved.",
+                 font=("Segoe UI", 9), fg="#94a3b8", bg="#0f172a").pack(anchor=tk.W, pady=(12, 4))
         tk.Label(self.tab_sched, wraplength=980, justify=tk.LEFT, font=("Segoe UI", 8), fg="#64748b", bg="#0f172a",
                  text="Packet layouts come from the official app's CommandUtils (switch-off 22 bytes, lamp 30, animation 38). "
                       "Not yet tried on a real cube: after saving, check that the cube answers with a positive ACK in the "
@@ -3347,6 +3439,53 @@ class TittleDesktopApp:
         self.orient_lbl = tk.Label(r, text="", font=("Segoe UI", 9), fg="#94a3b8", bg="#1e293b")
         self.orient_lbl.pack(side=tk.LEFT, padx=8)
         self._describe_orientation()
+        self._init_wifi_setup(self.tab_settings)
+
+    def _init_wifi_setup(self, parent):
+        tk.Label(parent, text="Connect a reset cube to Wi-Fi", font=("Segoe UI", 11, "bold"), fg="#f8fafc",
+                 bg="#0f172a").pack(anchor=tk.W, pady=(18, 0))
+        tk.Label(parent, wraplength=950, justify=tk.LEFT, font=("Segoe UI", 9), fg="#cbd5e1", bg="#0f172a",
+                 text="Only needed for a new or reset cube that isn't on your Wi-Fi yet (the same steps as the official "
+                      "app's standard setup). 1) Power the cube on: while it has no Wi-Fi it makes its own open network "
+                      "called 'Tittle-AP'. 2) Connect this computer to 'Tittle-AP'. 3) Type your home Wi-Fi below and "
+                      "press Send. The cube only supports 2.4 GHz Wi-Fi. 4) Reconnect this computer to your home Wi-Fi "
+                      "and press 🔍 Sniff / Connect.").pack(anchor=tk.W, pady=(4, 8))
+        card = tk.Frame(parent, bg="#1e293b", padx=15, pady=12)
+        card.pack(fill=tk.X)
+        cfg = read_config(self.client.config_file)
+        self.wifi_ssid = tk.StringVar(value=cfg.get("wifi_ssid", ""))
+        self.wifi_pass = tk.StringVar()
+        ent = dict(font=("Consolas", 10), bg="#0f172a", fg="#38bdf8", insertbackground="white", bd=1)
+        r = tk.Frame(card, bg="#1e293b"); r.pack(anchor=tk.W)
+        tk.Label(r, text="Wi-Fi name", font=("Segoe UI", 9, "bold"), fg="#cbd5e1", bg="#1e293b").pack(side=tk.LEFT)
+        tk.Entry(r, textvariable=self.wifi_ssid, width=24, **ent).pack(side=tk.LEFT, padx=(6, 14))
+        tk.Label(r, text="Password", font=("Segoe UI", 9, "bold"), fg="#cbd5e1", bg="#1e293b").pack(side=tk.LEFT)
+        pw = tk.Entry(r, textvariable=self.wifi_pass, width=22, show="•", **ent)
+        pw.pack(side=tk.LEFT, padx=6)
+        show = tk.BooleanVar(value=False)
+        tk.Checkbutton(r, text="show", variable=show, command=lambda: pw.configure(show="" if show.get() else "•"),
+                       bg="#1e293b", fg="#e2e8f0", selectcolor="#0f172a", activebackground="#1e293b",
+                       font=("Segoe UI", 8)).pack(side=tk.LEFT)
+        tk.Button(r, text="📶 Send to cube", bg="#2563eb", fg="white", font=("Segoe UI", 9, "bold"), bd=0,
+                  padx=10, pady=4, command=self.on_wifi_setup).pack(side=tk.LEFT, padx=10)
+        self.wifi_lbl = tk.Label(card, text="The password is sent only to the cube and is not saved.",
+                                 font=("Segoe UI", 9), fg="#94a3b8", bg="#1e293b")
+        self.wifi_lbl.pack(anchor=tk.W, pady=(8, 0))
+
+    def on_wifi_setup(self):
+        ssid, pw = self.wifi_ssid.get().strip(), self.wifi_pass.get()
+        if not ssid:
+            messagebox.showerror("Wi-Fi name missing", "Type the name of your home Wi-Fi.")
+            return
+        update_config(self.client.config_file, wifi_ssid=ssid)
+        self.wifi_lbl.configure(text="Sending… (this can take up to a minute)", fg="#38bdf8")
+
+        def run():
+            ok, msg = self.client.wifi_setup(ssid, pw)
+            if ok:
+                msg += " Now reconnect this computer to your home Wi-Fi and press 🔍 Sniff / Connect."
+            self.events.put(("call", lambda: self.wifi_lbl.configure(text=msg, fg="#10b981" if ok else "#f59e0b")))
+        self._bg(run)
 
     def _describe_orientation(self):
         o = ORIENTATION
