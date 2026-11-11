@@ -89,7 +89,7 @@ if getattr(sys, "frozen", False):   # packaged .exe / .app: keep settings in the
 else:
     CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tittle_config.json")
 
-APP_VERSION = "2026.11.11-r12"
+APP_VERSION = "2026.11.11-r13"
 FRAME_BYTES = 512 * 3
 OPCODE_PAINT = 0x90
 OPCODE_MOOD = 0x50
@@ -336,6 +336,7 @@ class TittleClient:
         self.last_action = None         # (method name, args, kwargs) of the last thing shown on the cube
         self.on_user_action = None      # called with (method, args) whenever something new is shown
         self.last_on_action = None      # the last thing shown that wasn't "off" (for the tray's On)
+        self.last_anim_id = None        # ID of the animation this app last started (to spot schedule-started ones)
         # "chunks" (0x21-0x23) is what worked on Ben's cube in the first real test (2026-11-08).
         # "compressed" (0x25) is what the official app uses on firmware 2.5+; "auto" follows the app's rule.
         self.upload_format = read_config(config_file).get("upload_format", "chunks")
@@ -588,8 +589,35 @@ class TittleClient:
         except Exception:
             pass
 
+    def peek_mode(self, timeout=1.5):
+        """Quietly ask what the cube is showing (70 05): no wake-up, no log spam, skipped if the app is busy."""
+        if not self.ip or not self.lock.acquire(blocking=False):
+            return False
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(timeout)
+            s.connect((self.ip, self.TCP_PORT))
+            s.sendall(bytes([0x70, 0x05, 0x0D, 0x0A]))
+            resp = s.recv(64)
+            s.close()
+        except Exception:
+            return None
+        finally:
+            self.lock.release()
+        if resp and len(resp) >= 12 and resp[0] == 0x70 and resp[1] == 0x05:
+            return {"mode": resp[2], "mode_name": MODE_NAMES.get(resp[2], f"0x{resp[2]:02X}"),
+                    "anim_id": int.from_bytes(bytes(resp[6:10]), "big"), "version": resp[10] or 1,
+                    "intensity": resp[11], "raw": bytes(resp)}
+        return None
+
     def _remember(self, method, *args, **kwargs):
         self.last_action = (method, args, kwargs)
+        if method == "play_stored":
+            self.last_anim_id = args[0]
+        elif method == "sync_clock":
+            self.last_anim_id = args[0]
+        elif method != "upload_frames":
+            self.last_anim_id = None
         if not (method == "set_solid_color" and (not any(args[:3]) or (len(args) > 3 and not args[3]))):
             self.last_on_action = self.last_action
         if self.on_user_action:
@@ -741,6 +769,8 @@ class TittleClient:
         num_frames = len(frames)
         if anim_id is None:      # hash what the cube will store, so a change of orientation gets a new ID
             anim_id = content_anim_id([to_device(f) for f in frames]) if not raw_binary else content_anim_id(frames)
+        if remember:
+            self.last_anim_id = anim_id
 
         def _worker(retry=True):
             failed = []
@@ -1340,7 +1370,7 @@ class All3DGenerators:
                 for x in range(8):
                     v = (math.sin(x * 0.6 + phase) + math.sin(y * 0.5 - phase) +
                          math.sin((x + y + z) * 0.35 + phase) + math.sin(math.hypot(x - 3.5, z - 3.5) * 0.8 - phase))
-                    All3DGenerators._put(buf, x, y, z, All3DGenerators._hsv(v / 8.0 + f / total, 1.0, 0.55))
+                    All3DGenerators._put(buf, x, y, z, All3DGenerators._hsv(v / 8.0 + f / total, 1.0, 0.9))
         return buf
 
     @staticmethod
@@ -1590,10 +1620,16 @@ class All3DGenerators:
         buf = bytearray(512 * 3)
         balls = [((255, 60, 60), 2, 0.0, 1), ((60, 255, 120), 3, 1.3, 2), ((80, 140, 255), 2, 2.6, 3)]
         for color, k, off, m in balls:
-            for back, fade in ((0.0, 1.0), (0.015, 0.4)):
+            for back, fade in ((0.03, 0.3), (0.0, 1.0)):
                 ph = (f / total - back) * 2 * math.pi
-                All3DGenerators._splat(buf, 3.5 + 3.2 * math.sin(m * ph + off), 3.5 + 3.2 * math.cos(ph + off * 2),
-                                       7.0 * abs(math.sin(k * ph + off)), color, fade)
+                cx, cy = 3.5 + 2.6 * math.sin(m * ph + off), 3.5 + 2.6 * math.cos(ph + off * 2)
+                cz = 1.0 + 5.0 * abs(math.sin(k * ph + off))
+                for z in range(8):                       # a soft ball about 3 LEDs across
+                    for y in range(8):
+                        for x in range(8):
+                            d2 = (x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2
+                            if d2 < 2.6:
+                                All3DGenerators._put(buf, x, y, z, color, fade * min(1.0, 1.25 - d2 / 2.6))
         return buf
 
     # ---- Moods named in the original Indiegogo campaign (look-alikes, not the real data) ----
@@ -2198,6 +2234,7 @@ class TittleDesktopApp:
         self.cur_g = 180
         self.cur_b = 80
         self.cur_intensity = 220
+        self.bright_var = tk.IntVar(value=self.cur_intensity)    # shared by the header, Lamp tab and tray
 
         # Worker threads must not touch Tk widgets, so they post events to this
         # queue and the Tk main loop drains it every 50 ms.
@@ -2231,6 +2268,8 @@ class TittleDesktopApp:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(50, self._drain_events)
+        self._cube_seen = None
+        self.root.after(60000, self._watch_cube)
         _n, _itv = motion_plan(All3DGenerators.aurora, self.smooth_var.get(), self.speed_var.get())
         self.set_current(Animation("Aurora", render_frames(All3DGenerators.aurora, _n, _itv), _itv, self.cur_intensity))
         self.client.log(f"Tittle Light Control Center {APP_VERSION} started (upload format: {self.client.upload_format})")
@@ -2303,12 +2342,50 @@ class TittleDesktopApp:
             self._bg(self.client.set_solid_color, self.cur_r, self.cur_g, self.cur_b, self.cur_intensity)
 
     def set_brightness(self, value):
-        """Tray brightness: move the slider and re-send what's playing."""
+        """Tray brightness: move the sliders and re-send what's playing."""
+        self.apply_brightness(value)
         try:
-            self.bright_scale.set(value)
+            self.root.update_idletasks()
         except Exception:
             pass
-        self.apply_brightness(value)
+
+    def _watch_cube(self):
+        """Once a minute: ask the cube what it's showing, so a schedule turning it on/off shows up here."""
+        def run():
+            if self.client.active_worker and self.client.active_worker.is_alive():
+                return
+            info = self.client.peek_mode()
+            if info is False:
+                return
+            self.events.put(("call", lambda: self._cube_report(info)))
+        if self.client.ip:
+            self._bg(run)
+        self.root.after(60000, self._watch_cube)
+
+    def _cube_report(self, info):
+        cl = self.client
+        if info is None:
+            if self._cube_seen is not False:
+                self.update_status("Cube isn't answering (scheduled off, or unplugged?)", "#f59e0b")
+            self._cube_seen = False
+            return
+        key = (info["mode"], info["anim_id"])
+        if self._cube_seen is False or (key != self._cube_seen and info["mode"] in (0x50, 0x20, 0x90)
+                                         and info["anim_id"] != cl.last_anim_id):
+            if info["mode"] in (0x50, 0x20, 0x90) and info["anim_id"] != cl.last_anim_id:
+                names = {p["id"]: p["name"] for p in self._saved_presets()}
+                what = names.get(info["anim_id"], f"ID {info['anim_id']}")
+                self.update_status(f"Cube is playing '{what}' (started by the cube, e.g. its schedule)", "#10b981")
+            else:
+                self.update_status(f"Cube is back: {info['mode_name']} mode", "#10b981")
+        self._cube_seen = key
+
+    def _refresh_tray(self):
+        if getattr(self, "tray", None):
+            try:
+                self.tray.update_menu()
+            except Exception:
+                pass
 
     def _setup_tray(self):
         if sys.platform != "win32":
@@ -2337,6 +2414,12 @@ class TittleDesktopApp:
             return [Item(title, post(lambda t=title, g=gen: self.play_generator(t, g)))
                     for grp, title, gen in self.preset_registry if grp == group]
 
+        def bright_action(v):          # pystray actions take exactly (icon, item)
+            def act(icon=None, item=None):
+                self.cur_intensity = v       # so the tick moves straight away, before the window catches up
+                self.events.put(("call", lambda: self.set_brightness(v)))
+            return act
+
         def saved_items():
             items = [Item(p["name"], post(lambda p=p: self.client.play_stored(
                 p["id"], p["version"], p.get("opcode", OPCODE_MOOD), self.cur_intensity, name=p["name"])))
@@ -2349,7 +2432,7 @@ class TittleDesktopApp:
             Item("On", post(self.turn_on)),
             Item("Off", post(lambda: self._bg(self.client.turn_off))),
             Item("Brightness", Menu(*[
-                Item(f"{pct}%", post(lambda v=val: self.set_brightness(v)), radio=True,
+                Item(f"{pct}%", bright_action(val), radio=True,
                      checked=lambda item, v=val: abs(self.cur_intensity - v) <= 12)
                 for pct, val in ((100, 255), (75, 191), (50, 128), (25, 64), (10, 26))])),
             Menu.SEPARATOR,
@@ -2420,8 +2503,8 @@ class TittleDesktopApp:
 
         tk.Label(conn_frame, text="☀", font=("Segoe UI", 11), fg="#fbbf24", bg="#1e293b").pack(side=tk.LEFT, padx=(10, 0))
         self.bright_scale = tk.Scale(conn_frame, from_=10, to=255, orient=tk.HORIZONTAL, length=int(120 * self.ui_scale),
-                                     showvalue=False, bg="#1e293b", highlightthickness=0, troughcolor="#0f172a")
-        self.bright_scale.set(self.cur_intensity)
+                                     showvalue=False, bg="#1e293b", highlightthickness=0, troughcolor="#0f172a",
+                                     variable=self.bright_var)
         self.bright_scale.bind("<ButtonRelease-1>", lambda e: self.apply_brightness(self.bright_scale.get()))
         self.bright_scale.pack(side=tk.LEFT, padx=(2, 8))
 
@@ -2592,8 +2675,7 @@ class TittleDesktopApp:
 
         tk.Label(right, text="Brightness / Intensity (0 - 255):", font=("Segoe UI", 9, "bold"), fg="#cbd5e1", bg="#1e293b").pack(anchor=tk.W)
         self.slider_intensity = tk.Scale(right, from_=0, to=255, orient=tk.HORIZONTAL, bg="#1e293b", fg="#e2e8f0",
-                                         highlightthickness=0, command=self.on_slider_change)
-        self.slider_intensity.set(self.cur_intensity)
+                                         highlightthickness=0, command=self.on_slider_change, variable=self.bright_var)
         self.slider_intensity.pack(fill=tk.X, pady=(0, 15))
 
         tk.Label(right, text="Red (0 - 255):", font=("Segoe UI", 9, "bold"), fg="#f87171", bg="#1e293b").pack(anchor=tk.W)
@@ -2633,9 +2715,8 @@ class TittleDesktopApp:
         self.cur_r = self.slider_r.get()
         self.cur_g = self.slider_g.get()
         self.cur_b = self.slider_b.get()
-        self.cur_intensity = self.slider_intensity.get()
-        if hasattr(self, "bright_scale") and self.bright_scale.get() != self.cur_intensity:
-            self.bright_scale.set(self.cur_intensity)
+        self.cur_intensity = int(self.bright_var.get())
+        self._refresh_tray()
         self.color_box.configure(bg=f"#{self.cur_r:02x}{self.cur_g:02x}{self.cur_b:02x}")
 
     # Where each remembered action keeps its intensity argument
@@ -2643,15 +2724,40 @@ class TittleDesktopApp:
 
     def apply_brightness(self, value):
         """Brightness works for everything: re-send whatever is showing with the new intensity.
-        Animations the cube already has only need their header again, so this is quick."""
+        Animations the cube already has only need their header again, so this is quick. If a schedule
+        started what's showing, the cube is asked what it is and that gets re-sent instead."""
         value = int(value)
         self.cur_intensity = value
-        try:
-            self.slider_intensity.set(value)
-        except Exception:
-            pass
-        last = self.client.last_action
-        if not last or not self.client.ip:
+        if int(self.bright_var.get()) != value:
+            self.bright_var.set(value)
+        self._refresh_tray()
+        self._schedule_morning_follow()
+        if self.client.ip:
+            self._bg(self._resend_bright, value)
+
+    def _resend_bright(self, value):
+        if value != self.cur_intensity:
+            return                                   # a newer change is already on its way
+        cl = self.client
+        info = cl.peek_mode()
+        last = cl.last_action
+        if info is None:
+            cl.log(f"[i] Brightness {value}: the cube isn't answering right now (scheduled off?). "
+                   "It will be used for the next thing you play.")
+            return
+        if info and info["mode"] in (0x50, 0x20, 0x90) and info["anim_id"] and info["anim_id"] != cl.last_anim_id:
+            cl.log(f"[*] Brightness {value}: the cube is playing ID {info['anim_id']} v{info['version']}, which this "
+                   f"app didn't start (a schedule did?), so re-sending that")
+            names = {p["id"]: p["name"] for p in self._saved_presets()}
+            cl.play_stored(info["anim_id"], info["version"], info["mode"], value, name=names.get(info["anim_id"]))
+            return
+        if info and info["mode"] == 0x10 and (not last or last[0] != "set_solid_color"):
+            rgb = read_config(cl.config_file).get("schedule", {}).get("rgb")
+            if rgb and any(rgb):
+                cl.log(f"[*] Brightness {value}: the schedule's lamp colour is showing, re-sending it")
+                cl.set_solid_color(*rgb, value)
+            return
+        if not last:
             return
         method, args, kwargs = last
         pos = self.INTENSITY_ARG.get(method)
@@ -2661,8 +2767,33 @@ class TittleDesktopApp:
             return                                   # the cube is off; don't switch it on
         args = list(args)
         args[pos] = value
-        self.client.log(f"[*] Brightness {value}: re-sending {method}")
-        self._bg(lambda: getattr(self.client, method)(*args, **kwargs))
+        cl.log(f"[*] Brightness {value}: re-sending {method}")
+        getattr(cl, method)(*args, **kwargs)
+
+    def _schedule_morning_follow(self):
+        """The saved morning-on timer keeps its own brightness on the cube; update it to match (after a pause)."""
+        job = getattr(self, "_morning_job", None)
+        if job:
+            self.root.after_cancel(job)
+        self._morning_job = self.root.after(2500, self._resave_morning)
+
+    def _resave_morning(self):
+        self._morning_job = None
+        sc = read_config(self.client.config_file).get("schedule", {})
+        if not sc.get("morning_enabled") or sc.get("intensity") == self.cur_intensity or not self.client.ip:
+            return
+        start, end = tuple(sc.get("on", (7, 0))), tuple(sc.get("off", (23, 0)))
+        if sc.get("kind") == "anim":
+            a = self.current
+            if a is None or (a.anim_id or content_anim_id(a.frames)) != sc.get("anim_id"):
+                return                               # the Files preview has changed since; leave the timer alone
+            self.on_save_morning(True)
+            return
+        rgb = sc.get("rgb") or [self.cur_r, self.cur_g, self.cur_b]
+        pkt = TittleClient.build_lamp_timer(self.MORNING_TIMER_ID, start, end, tuple(rgb), self.cur_intensity, EVERY_DAY, True)
+        sc["intensity"] = self.cur_intensity
+        update_config(self.client.config_file, schedule=sc)
+        self.client.send_timer(pkt, f"morning-on brightness now {round(self.cur_intensity / 2.55)}%")
 
     def send_cur_lamp(self):
         threading.Thread(target=lambda: self.client.set_solid_color(
@@ -2782,7 +2913,7 @@ class TittleDesktopApp:
         tk.Label(live, wraplength=900, justify=tk.LEFT, font=("Segoe UI", 9), fg="#cbd5e1", bg="#1e293b",
                  text="Shows the hours (orange) and minutes (blue) in turn on the front of the cube. This uses the "
                       "computer's clock: the app redraws it every minute, so keep the app open. Playing anything else "
-                      "stops it. The cube's own clock (B) needs a clock face the cube still has stored.").pack(anchor=tk.W, pady=(2, 6))
+                      "stops it.").pack(anchor=tk.W, pady=(2, 6))
         r = tk.Frame(live, bg="#1e293b"); r.pack(anchor=tk.W)
         self.live_btn = btn(r, "▶ Start live clock", self.toggle_live_clock, "#10b981")
         self.live_btn.pack(side=tk.LEFT)
@@ -2793,6 +2924,7 @@ class TittleDesktopApp:
         self.live_clock_on, self.live_clock_last = False, None
 
         orig = tk.Frame(self.tab_clock, bg="#1e293b", padx=15, pady=12)
+        self.clock_b_frame = orig
         orig.pack(fill=tk.X)
         tk.Label(orig, text="B · The cube's own clock faces (OpCode 0x34)", font=("Segoe UI", 10, "bold"),
                  fg="#38bdf8", bg="#1e293b").pack(anchor=tk.W)
@@ -3412,18 +3544,18 @@ class TittleDesktopApp:
 
         tk.Label(self.tab_sched, text="The cube can't report which timers it holds, so this tab shows what the app last saved.",
                  font=("Segoe UI", 9), fg="#94a3b8", bg="#0f172a").pack(anchor=tk.W, pady=(12, 4))
-        tk.Label(self.tab_sched, wraplength=980, justify=tk.LEFT, font=("Segoe UI", 8), fg="#64748b", bg="#0f172a",
-                 text="Packet layouts come from the official app's CommandUtils (switch-off 22 bytes, lamp 30, animation 38). "
-                      "Not yet tried on a real cube: after saving, check that the cube answers with a positive ACK in the "
-                      "Debug tab.").pack(anchor=tk.W)
+        tk.Label(self.tab_sched, wraplength=980, justify=tk.LEFT, font=("Segoe UI", 9), fg="#94a3b8", bg="#0f172a",
+                 text="The morning-on timer uses the brightness from the ☀ slider and follows it when you change it later.").pack(anchor=tk.W)
 
     def _hm(self, hv, mv):
         h, m = max(0, min(23, int(hv.get()))), max(0, min(59, int(mv.get())))
         return h, m
 
-    def _save_sched(self):
-        update_config(None, schedule={"off": list(self._hm(self.off_h, self.off_m)),
-                                      "on": list(self._hm(self.on_h, self.on_m)), "kind": self.on_kind.get()})
+    def _save_sched(self, **extra):
+        sc = read_config(self.client.config_file).get("schedule", {})
+        sc.update({"off": list(self._hm(self.off_h, self.off_m)), "on": list(self._hm(self.on_h, self.on_m)),
+                   "kind": self.on_kind.get()}, **extra)
+        update_config(self.client.config_file, schedule=sc)
 
     def on_save_night(self, enabled=True):
         try:
@@ -3442,7 +3574,9 @@ class TittleDesktopApp:
             start, end = self._hm(self.on_h, self.on_m), self._hm(self.off_h, self.off_m)
         except ValueError:
             return
-        self._save_sched()
+        self._save_sched(morning_enabled=enabled, intensity=self.cur_intensity, rgb=[self.cur_r, self.cur_g, self.cur_b],
+                         anim_id=(self.current.anim_id or content_anim_id(self.current.frames))
+                         if (self.on_kind.get() == "anim" and self.current is not None) else None)
         label = f"on at {start[0]:02d}:{start[1]:02d} every day" if enabled else "morning-on removed"
         if self.on_kind.get() == "anim" and self.current is not None:
             a = self.current
@@ -3552,6 +3686,27 @@ class TittleDesktopApp:
         self.orient_lbl.pack(side=tk.LEFT, padx=8)
         self._describe_orientation()
         self._init_wifi_setup(self.tab_settings)
+        tk.Label(self.tab_settings, text="Old app tools", font=("Segoe UI", 11, "bold"), fg="#f8fafc",
+                 bg="#0f172a").pack(anchor=tk.W, pady=(18, 0))
+        self.old_tools_var = tk.BooleanVar(value=bool(read_config(self.client.config_file).get("show_old_tools", False)))
+        tk.Checkbutton(self.tab_settings, variable=self.old_tools_var, command=self._apply_old_tools,
+                       text="Show the 🎵 Music tab and the clock's stored faces. They only work if the cube still has "
+                            "content from the old Tittle server, which Ben's cube doesn't.",
+                       bg="#0f172a", fg="#cbd5e1", selectcolor="#1e293b", activebackground="#0f172a",
+                       font=("Segoe UI", 9)).pack(anchor=tk.W, pady=(4, 0))
+        self._apply_old_tools(save=False)
+
+    def _apply_old_tools(self, save=True):
+        on = bool(self.old_tools_var.get())
+        if save:
+            update_config(self.client.config_file, show_old_tools=on)
+        if on:
+            self.notebook.insert(self.tab_files, self.tab_music)
+            self.notebook.tab(self.tab_music, state="normal")
+            self.clock_b_frame.pack(fill=tk.X)
+        else:
+            self.notebook.hide(self.tab_music)
+            self.clock_b_frame.pack_forget()
 
     def _init_wifi_setup(self, parent):
         tk.Label(parent, text="Connect a reset cube to Wi-Fi", font=("Segoe UI", 11, "bold"), fg="#f8fafc",

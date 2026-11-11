@@ -2,6 +2,23 @@
 
 The version is shown in the desktop app's window title. Newest first.
 
+## 2026.11.11-r13
+
+- **One brightness everywhere:** the ☀ slider, the Lamp tab's brightness and the tray menu now
+  share one value. A change in any of them shows in the others straight away, and the tray tick
+  moves on the first click.
+- **Brightness works on presets a schedule started:** the app asks the cube what it's playing and
+  re-sends that at the new brightness. The saved morning-on timer also follows the slider, so
+  tomorrow's preset comes on at the brightness you last chose.
+- **The status bar follows the cube:** about once a minute the app checks what the cube is showing.
+  If a schedule turned it off or started something, the top bar says so, using the saved preset's
+  name when it has one.
+- **Old app tools hidden:** the 🎵 Music tab and the clock's stored faces only work with content
+  from the old Tittle server, which Ben's cube doesn't have. They're now behind ⚙ Settings →
+  *Old app tools* (off by default).
+- **Bigger Bouncing Balls** (soft balls about 3 LEDs across) and **brighter Plasma**.
+- Removed the outdated "not yet tried on a real cube" note from ⏰ Schedule.
+
 ## 2026.11.11-r12
 
 - **Waking the cube during a scheduled off:** when the cube doesn't answer, the app now tries to
