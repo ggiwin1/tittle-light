@@ -57,10 +57,10 @@ How to recognise the animation data:
 
 ## 5. Play them (optional, offline)
 
-Copy the database file (and its `-wal`/`-shm` files, if any) out of the backup browser into a folder.
-Then, in the desktop app, open **♻️ Originals → 📂 Open app database…** and pick the `.sqlite` or
-`.db` file. The app reads only that one file, on your computer, and lists every animation it
-recognises. **💾 Save all…** keeps them as JSON files that you can replay forever.
+Export the Tittle app's whole folder (or just the database file and its `-wal`/`-shm` files) out of
+the backup browser into a folder. Then, in the desktop app, open **♻ Originals → 📂 Open copied
+folder…** and pick that folder (or **📂 One database…** for a single `.sqlite` / `.db` file). The app
+reads only what you pick, on your computer, and lists every animation it recognises. **💾 Save all…** keeps them as JSON files that you can replay forever.
 
 If the app doesn't recognise the file, you don't need to share any data. The table and column
 names (for example from DB Browser for SQLite) are enough to add support for the format.

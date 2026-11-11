@@ -56,11 +56,13 @@ Tittle server, which is now shut down. Two places may still have them:
    cube has saved. Each one it finds is added to ⭐ Saved presets. A full scan takes a while, so
    after *What is it playing now?* the range is narrowed to the numbers around the current mood.
 2. **An old phone that had the Tittle app.** It kept a copy of everything it downloaded.
+   - **Mac (Apple Silicon) with the iPhone app installed:** see [`MAC_GUIDE.md`](MAC_GUIDE.md). This is the
+     best chance, because the Mac keeps the app's downloaded files, which backups leave out.
    - **iPhone:** see [`IPHONE_GUIDE.md`](IPHONE_GUIDE.md) for where to look in a backup yourself. This app never reads backups.
    - **Android:** the app's `tittle.db` needs a rooted phone or an adb backup.
 
-   Once you've copied a database file out, open it with **📂 Open app database…** to play the
-   animations, then **💾 Save all…** to keep them as JSON.
+   Once you've copied the app's folder out, open it with **📂 Open copied folder…** (or a single
+   database with **📂 One database…**) to play the animations, then **💾 Save all…** to keep them as JSON.
 
 ## Other things in this kit
 
@@ -93,7 +95,7 @@ most of these false alarms. The old single-file `.exe` from r6 is the one Defend
 
 ## Good to know
 
-- The window title shows the app version. This kit is **2026.11.11-r13**. See `CHANGELOG.md` for what changed in each version. If you see no ⏰ Schedule tab,
+- The window title shows the app version. This kit is **2026.11.11-r14**. See `CHANGELOG.md` for what changed in each version. If you see no ⏰ Schedule tab,
   you are running an older copy: delete it and use the one in this kit.
 - Nothing here has been tested on a real cube yet, only on a simulator. If something
   misbehaves, the 🔍 Debug tab shows what the cube replied.

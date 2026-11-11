@@ -2,6 +2,17 @@
 
 The version is shown in the desktop app's window title. Newest first.
 
+## 2026.11.11-r14
+
+- **Old Tittle app on a Mac:** new `MAC_GUIDE.md` explains where an Apple Silicon Mac keeps the iPhone
+  app's data, what to copy (including its download cache, which iPhone backups leave out) and what to
+  look for. You do it yourself, and nothing leaves your computer.
+- **📂 Open copied folder…** (♻ Originals): pick the folder you copied and the app reads every file in
+  it. That covers databases, cached downloads (also gzip-compressed ones and Apple's `Cache.db`), JSON
+  and plists. It lists each animation with its original name, ID and version when the file has them.
+  Pictures and sounds are skipped, and duplicates are shown once. *📂 One database…* still opens a
+  single file.
+
 ## 2026.11.11-r13
 
 - **One brightness everywhere:** the ☀ slider, the Lamp tab's brightness and the tray menu now

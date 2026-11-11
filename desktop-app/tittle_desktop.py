@@ -89,7 +89,7 @@ if getattr(sys, "frozen", False):   # packaged .exe / .app: keep settings in the
 else:
     CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tittle_config.json")
 
-APP_VERSION = "2026.11.11-r13"
+APP_VERSION = "2026.11.11-r14"
 FRAME_BYTES = 512 * 3
 OPCODE_PAINT = 0x90
 OPCODE_MOOD = 0x50
@@ -2183,6 +2183,71 @@ def generic_sqlite_animations(path):
         con.close()
 
 
+def _anims_from_json(obj, label, depth=0):
+    """A downloaded animation is probably JSON with a name/ID/version/interval and a list of frames.
+    Keep that information when it's there; a list of such objects gives one animation each."""
+    if depth > 3:
+        return []
+    if isinstance(obj, list) and obj and all(isinstance(x, dict) for x in obj[:5]):
+        out = []
+        for x in obj:
+            out += _anims_from_json(x, label, depth + 1)
+        if out:
+            return out
+    if isinstance(obj, dict):
+        low = {str(k).lower(): k for k in obj}
+        fkey = next((low[k] for k in low if "frame" in k), None)
+        if fkey is not None:
+            fr = _frames_from_value(obj[fkey])
+            if fr:
+                get = lambda *names: next((obj[low[n]] for n in names if n in low), None)
+                name = get("name", "title") or label
+                aid = get("id", "animation_id", "anim_id", "animationid")
+                ver = get("version")
+                itv = get("time_interval", "interval", "timeinterval")
+                a = Animation(str(name)[:60], [from_device(x) for x in fr], 100)
+                try:
+                    a.anim_id = int(aid) if aid is not None else None
+                    a.version = int(ver) if ver is not None else 1
+                    if itv is not None:
+                        a.raw_interval = int(itv)
+                except (TypeError, ValueError):
+                    pass
+                return [a]
+        out = []
+        for k in obj:
+            if isinstance(obj[k], (list, dict)):
+                out += _anims_from_json(obj[k], f"{label} · {k}", depth + 1)
+        return out
+    return []
+
+
+def _json_anims_in_sqlite(path):
+    """Cache databases (e.g. Apple's Cache.db) keep whole downloads in one cell: read them as JSON."""
+    out = []
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+            for row in con.execute(f'SELECT * FROM "{t}" LIMIT 20000'):
+                for v in row:
+                    if isinstance(v, (bytes, str)) and len(v) > 20:
+                        data = v.encode("utf-8") if isinstance(v, str) else v
+                        if data[:2] == b"\x1f\x8b":
+                            import gzip
+                            try:
+                                data = gzip.decompress(data)
+                            except Exception:
+                                continue
+                        if data.lstrip()[:1] in (b"{", b"["):
+                            try:
+                                out += _anims_from_json(json.loads(data.decode("utf-8")), t)
+                            except Exception:
+                                pass
+    finally:
+        con.close()
+    return out
+
+
 def animations_from_files(files):
     """Try every file (SQLite, JSON, plist, raw) for animations. files = [(label, path)]."""
     animations, notes = [], []
@@ -2192,10 +2257,26 @@ def animations_from_files(files):
                 head = f.read(16)
             if head.startswith(b"SQLite format 3"):
                 a, n = load_app_database(p)
+                named = _json_anims_in_sqlite(p)
+                if named and all(x.anim_id is None for x in a):
+                    a = named                      # whole downloads with their names and IDs beat loose frames
             else:
                 with open(p, "rb") as f:
-                    fr = _frames_from_value(f.read())
-                a, n = ([Animation(os.path.basename(label), [from_device(x) for x in fr], 100)] if fr else []), []
+                    data = f.read()
+                if data[:2] == b"\x1f\x8b":              # gzip (some cached downloads are stored compressed)
+                    import gzip
+                    data = gzip.decompress(data)
+                a = []
+                t = data.lstrip()[:1]
+                if t in (b"{", b"["):
+                    try:
+                        a = _anims_from_json(json.loads(data.decode("utf-8")), os.path.basename(label))
+                    except Exception:
+                        a = []
+                if not a:
+                    fr = _frames_from_value(data)
+                    a = [Animation(os.path.basename(label), [from_device(x) for x in fr], 100)] if fr else []
+                n = []
             for anim in a:
                 anim.name = f"{anim.name}"[:60]
             animations += a
@@ -3298,13 +3379,13 @@ class TittleDesktopApp:
         self._refresh_saved()
 
         # (2) old phone database
-        c2 = card(right, "From an old phone's Tittle app")
+        c2 = card(right, "From the old Tittle app (Mac, iPhone or Android)")
         c2.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
-        note(c2, "Open a database file you copied out of the old Tittle app yourself: tittle.db from Android, or "
-                 "the .sqlite file from the iPhone app's folder (see IPHONE_GUIDE.md for where to look). The file "
-                 "is only read on this computer.").pack(anchor=tk.W)
+        note(c2, "Pick a folder you copied out of the old app yourself (MAC_GUIDE.md / IPHONE_GUIDE.md say where to "
+                 "look), or a single tittle.db / .sqlite file. Files are only read on this computer.").pack(anchor=tk.W)
         r = tk.Frame(c2, bg="#1e293b"); r.pack(fill=tk.X, pady=6)
-        btn(r, "📂 Open app database…", self.on_open_db, "#2563eb").pack(side=tk.LEFT)
+        btn(r, "📂 Open copied folder…", self.on_open_folder, "#2563eb").pack(side=tk.LEFT)
+        btn(r, "📂 One database…", self.on_open_db).pack(side=tk.LEFT, padx=(4, 0))
         btn(r, "⚡ Play", self.on_play_db, "#10b981").pack(side=tk.LEFT, padx=4)
         btn(r, "💾 Save all…", self.on_export_db).pack(side=tk.LEFT)
         f, self.db_list = listbox(c2, 5, "#e2e8f0")
@@ -3458,6 +3539,47 @@ class TittleDesktopApp:
         self.client.log(f"[+] {len(anims)} animation(s) recovered from {os.path.basename(path)}")
         for n in notes:
             self.client.log(f"    {n}")
+
+    def on_open_folder(self):
+        """Read every file in a folder the user copied out (e.g. the old Mac/iPhone app's data folder)."""
+        folder = filedialog.askdirectory(title="Choose the folder you copied out of the old Tittle app")
+        if not folder:
+            return
+        self.update_status("Reading the copied folder…", "#3b82f6")
+
+        def run():
+            files, skipped = [], 0
+            for dirpath, _dirs, names in os.walk(folder):
+                for nm in names:
+                    p = os.path.join(dirpath, nm)
+                    try:
+                        size = os.path.getsize(p)
+                    except OSError:
+                        continue
+                    if nm.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.heic', '.mp4', '.mov', '.m4a', '.mp3', '.wav', '.car', '.nib', '.storyboardc', '.ttf', '.otf', '.dylib', '.strings', '-shm', '-wal')) or size < 64 or size > 64 * 1024 * 1024:
+                        skipped += 1
+                        continue
+                    files.append((os.path.relpath(p, folder), p))
+                    if len(files) >= 20000:
+                        break
+            anims, notes = animations_from_files(files)
+            seen, unique = set(), []
+            for a in anims:                     # the same animation is often cached more than once
+                key = (a.anim_id, a.version, zlib.crc32(b"".join(bytes(f) for f in a.frames)))
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(a)
+
+            def ui():
+                self._show_db_anims(unique, os.path.basename(folder) + " (folder)")
+                self.client.log(f"    read {len(files)} file(s), skipped {skipped} (pictures, sounds, tiny or huge files)")
+                for n in notes:
+                    if not n.endswith("skipped (file is not a database)"):
+                        self.client.log(f"    {n}")
+                self.update_status(f"{len(unique)} animation(s) found in the copied folder",
+                                   "#10b981" if unique else "#f59e0b")
+            self.events.put(("call", ui))
+        self._bg(run)
 
     def _show_db_anims(self, anims, source):
         self.db_anims = anims
