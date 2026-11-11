@@ -414,9 +414,9 @@ def save_preview_gif(frames, path, interval_ms=80, size=260):
 # "recipe" (an 8x8 pixel-art sprite, colours, effect, background) and this script
 # draws the frames, so whatever AI is used the output is always a valid cube file.
 
-AI_PROMPT = """I have a Tittle Light: a cube of 8 x 8 x 8 RGB LEDs. I want a new light mode for it based on the picture I'm attaching.
+AI_PROMPT = """I have a Tittle Light: a cube of 8 x 8 x 8 RGB LEDs. I want a new light mode for it {source}
 
-Please design an 8x8 pixel-art version of the main subject of the picture (think emoji or retro video game icon: bold simple shape, clear outline, 2 to 5 colours, no fine detail). Optionally draw a second pose of it so the animation can alternate between the two (blinking eyes, a beating heart, a wagging tail, a flickering flame). Then choose how it moves and what is behind it.
+Please design an 8x8 pixel-art version of {subject} (think emoji or retro video game icon: bold simple shape, clear outline, 2 to 5 colours, no fine detail). Optionally draw a second pose of it so the animation can alternate between the two (blinking eyes, a beating heart, a wagging tail, a flickering flame). Then choose how it moves and what is behind it.
 
 Tips for LEDs: bright, saturated colours look best. Black and very dark colours just show as "off", so use "." for off instead. Leave a little empty margin so the shape reads clearly.
 
@@ -460,9 +460,19 @@ Rules:
 """
 
 
-def build_prompt(idea=""):
-    idea_line = (f"\nWhat I'd like: {idea.strip()}\n") if idea and idea.strip() else ""
+def build_prompt(idea="", picture=True):
+    """picture=True: the user attaches a picture to the AI chat. Without one, the idea text is the whole brief."""
+    idea = (idea or "").strip()
+    if picture:
+        source = "based on the picture I'm attaching."
+        subject = "the main subject of the picture"
+        idea_line = f"\nWhat I'd like: {idea}\n" if idea else ""
+    else:
+        source = f"based on this idea: {idea or 'surprise me with something fun'}"
+        subject = "that idea"
+        idea_line = ""
     return AI_PROMPT.format(
+        source=source, subject=subject,
         effects="\n".join(f"- {k}: {v}" for k, v in EFFECTS.items()),
         backgrounds="\n".join(f"- {k}: {v}" for k, v in BACKGROUNDS.items()),
         effect_names=", ".join(EFFECTS),

@@ -31,7 +31,7 @@ shows the cube's IP.
 | 🎨 Look-alikes | Fireplace, Wave, Rain, Snow, Sparkle, Fireworks, Vortex, plus Sunset, Constellation, Snow Globe and Confetti (names from the original Indiegogo campaign). These are **not** the real originals, only look-alikes (see "Original animations" below). |
 | ✨ 3D Presets | New 3D effects (not originals): Tesseract, Fairies, Jellyfish, DNA, Matrix Rain, Acoustic Ripple, Aurora, Lava Lamp, Spiral Galaxy, Heartbeat, Warp Speed, Plasma, Bouncing Balls, Rainbow Spin. |
 | ⏰ Schedule | Turns the cube **off every night** and **back on every morning**. The timer is saved on the cube, so it works with the app closed. |
-| 🖼️ Picture | Turns any photo into a light mode, either directly or by having an AI (ChatGPT, Gemini, Claude…) design it. |
+| 🖼️ Preset Generator | Turns a photo into a light mode directly, or has any AI (ChatGPT, Gemini, Claude…) design one from your idea in words, with or without a picture. |
 | 📁 Files | Opens animations from the web editor (`.json`, `.bin`) and MagicaVoxel `.vox` files, and saves them as JSON. |
 | ♻️ Originals | Tools for finding the original animations (see below). |
 | 🕒 Clock | **Live clock** (uses the computer's time; playing anything else stops it) in 12-hour (a purple bar on top means PM) or 24-hour time. The app draws the time and updates it every minute while the app is open, or a clock face the cube still has saved from the old app. |
@@ -66,7 +66,7 @@ Tittle server, which is now shut down. Two places may still have them:
 
 - `image-tool/`: the picture tool on its own (`python tittle_image.py`, needs `pip install
   pillow`), plus `AI_PROMPT.md`, the text to paste into any AI to design a new light mode.
-  The desktop app's 🖼️ Picture tab does the same thing.
+  The desktop app's 🖼️ Preset Generator tab does the same thing.
 - `web-app/`: a browser version with a 3D voxel editor for drawing your own animations
   frame by frame. It needs Node.js 20 or newer:
   1. Open a terminal in `web-app/` and run `npm install` (only the first time).
@@ -80,7 +80,7 @@ Tittle server, which is now shut down. Two places may still have them:
 ## Windows tips
 
 - Closing the window hides the app to the **system tray** (by the clock). Right-click its icon to
-  show it again, turn the cube **On** or **Off**, play any preset or saved preset, or **Quit**.
+  show it again, turn the cube **On** or **Off**, set the brightness, play any preset or saved preset, or **Quit**.
 
 ## Windows Defender
 
@@ -93,7 +93,7 @@ most of these false alarms. The old single-file `.exe` from r6 is the one Defend
 
 ## Good to know
 
-- The window title shows the app version. This kit is **2026.11.11-r11**. See `CHANGELOG.md` for what changed in each version. If you see no ⏰ Schedule tab,
+- The window title shows the app version. This kit is **2026.11.11-r12**. See `CHANGELOG.md` for what changed in each version. If you see no ⏰ Schedule tab,
   you are running an older copy: delete it and use the one in this kit.
 - Nothing here has been tested on a real cube yet, only on a simulator. If something
   misbehaves, the 🔍 Debug tab shows what the cube replied.

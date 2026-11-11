@@ -89,7 +89,7 @@ if getattr(sys, "frozen", False):   # packaged .exe / .app: keep settings in the
 else:
     CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tittle_config.json")
 
-APP_VERSION = "2026.11.11-r11"
+APP_VERSION = "2026.11.11-r12"
 FRAME_BYTES = 512 * 3
 OPCODE_PAINT = 0x90
 OPCODE_MOOD = 0x50
@@ -498,7 +498,59 @@ class TittleClient:
 
         return found_ip[0] if found_ip else None
 
-    def send_packet(self, packet_bytes, expect_response=True):
+    def wake_cube(self, test=False):
+        """During a scheduled off period Ben's cube stops answering (connections time out). Try to get it back:
+        the discovery packet (which also finds it if its IP changed), then keep trying to connect for ~15 s."""
+        if not self.ip:
+            return False
+        self.log("[*] " + ("Wake test: " if test else "No answer from the cube. It may be in a scheduled off period; ")
+                 + "trying to wake it…")
+        self.status_callback("Waking the cube…", "#3b82f6")
+        started = time.time()
+        try:
+            parts = [int(p) for p in self.get_local_ip().split(".")]
+            pkt = bytes([0x70, 0x04] + parts + [0x0D, 0x0A])
+            u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            u.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            u.sendto(pkt, (self.ip, self.UDP_DISCOVERY_PORT))
+            u.close()
+            self.log(f"TX ──▶ UDP {hexdump(pkt)} to {self.ip}:{self.UDP_DISCOVERY_PORT}")
+        except Exception as e:
+            self.log(f"[i] UDP to the cube failed: {e}")
+        found = self._udp_broadcast_discover(timeout=3)
+        if found:
+            self.log(f"[+] The cube answered the discovery broadcast from {found} after {time.time() - started:.1f} s")
+            if found != self.ip:
+                self.log(f"[!] The cube's address changed from {self.ip} to {found}; using the new one.")
+                self.ip = found
+                self.save_ip(found)
+        else:
+            self.log("[-] No answer to the discovery broadcast")
+        attempt = 0
+        while time.time() - started < 18:
+            attempt += 1
+            t0 = time.time()
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(5)
+                s.connect((self.ip, self.TCP_PORT))
+                self.log(f"[+] Connected on attempt {attempt}, {time.time() - started:.1f} s after the first try")
+                self._tx(s, bytes([0x60, 0x01, 0x00, 0x0D, 0x0A]))
+                s.settimeout(6)
+                r = self._rx(s, 64)
+                s.close()
+                self.log("[+] The cube is awake and answering." if r else
+                         "[i] The cube accepted the connection but didn't answer the status question.")
+                return True
+            except Exception as e:
+                self.log(f"[-] Connect attempt {attempt}: {e}")
+                time.sleep(max(0.0, 1.0 - (time.time() - t0)))
+        self.log("[-] Couldn't wake the cube. If it's in a scheduled off period, press 🔍 Debug → 🧪 Wake test "
+                 "and send the log to Chad.")
+        self.status_callback("The cube isn't answering (scheduled off?)", "#f59e0b")
+        return False
+
+    def send_packet(self, packet_bytes, expect_response=True, _retry=True):
         if not self.ip:
             self.log("[ERROR] Cannot send packet: No IP address configured.")
             return None
@@ -516,11 +568,14 @@ class TittleClient:
                 self.is_connected = True
                 self.status_callback(f"Connected to {self.ip}", "#10b981")
                 return response
-            except Exception as e:
-                self.log(f"[ERROR] Socket communication failed: {e}")
-                self.is_connected = False
-                self.status_callback("Connection lost", "#ef4444")
-                return None
+            except Exception as e:          # can't connect: the cube may be in a scheduled off period
+                failed = str(e)
+        if _retry and self.wake_cube():
+            return self.send_packet(packet_bytes, expect_response, _retry=False)
+        self.log(f"[ERROR] Socket communication failed: {failed}")
+        self.is_connected = False
+        self.status_callback("Connection lost", "#ef4444")
+        return None
 
     def _note_cached(self, anim_id):
         """Remember (in the config file) which animation IDs the cube has confirmed, across app sessions."""
@@ -687,7 +742,8 @@ class TittleClient:
         if anim_id is None:      # hash what the cube will store, so a change of orientation gets a new ID
             anim_id = content_anim_id([to_device(f) for f in frames]) if not raw_binary else content_anim_id(frames)
 
-        def _worker():
+        def _worker(retry=True):
+            failed = []
             self.log(f"[*] Connecting to {self.ip} to upload '{name}' "
                      f"({num_frames} frames @ {interval_ms}ms, ID {anim_id}, version {version})...")
             self.status_callback(f"Loading '{name}' (0%)...", "#3b82f6")
@@ -705,6 +761,9 @@ class TittleClient:
 
                     # 2. Handshake: 01 01 = data not ready (send frames), 00 00 = cached
                     resp = self._rx(s, 64)
+                    if resp is None and retry:
+                        s.close()
+                        raise TimeoutError("no reply to the header")
                     known = read_config(self.config_file).get("cube_cache", {})
                     if is_cached_ack(resp):
                         self._note_cached(anim_id)
@@ -734,8 +793,15 @@ class TittleClient:
                         on_done()
 
                 except Exception as e:
-                    self.log(f"[ERROR] Failed to upload '{name}': {e}")
-                    self.status_callback("Animation upload failed - check connection", "#ef4444")
+                    if retry and not self.stop_flag.is_set():
+                        failed.append(e)
+                    else:
+                        self.log(f"[ERROR] Failed to upload '{name}': {e}")
+                        self.status_callback("Animation upload failed - check connection", "#ef4444")
+            if failed:
+                if self.wake_cube():
+                    return _worker(retry=False)
+                self.log(f"[ERROR] Failed to upload '{name}': {failed[0]}")
 
         self.active_worker = threading.Thread(target=_worker, daemon=True)
         self.active_worker.start()
@@ -754,7 +820,7 @@ class TittleClient:
             return
         self.stop_current_action()
 
-        def _worker():
+        def _worker(retry=True):
             with self.lock:
                 try:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -763,6 +829,16 @@ class TittleClient:
                     self._tx(s, header)
                     res = self._rx(s, 64)
                     s.close()
+                except Exception as e:
+                    res, err = None, e
+                else:
+                    err = None
+            if res is None and retry and self.wake_cube():
+                return _worker(retry=False)
+            with self.lock:
+                try:
+                    if err:
+                        raise err
                     if res and len(res) > 5 and res[4] == 1:
                         self.log(f"[-] {label}: the cube does not have this ID/version stored and asked for its data. "
                                  f"That data came from the old Tittle server, so it can't be sent. Put the cube in "
@@ -814,7 +890,15 @@ class TittleClient:
                 self.log(f"TX ──▶ {hexdump(hdr)} (try stored ID {anim_id} v{version})")
                 ok, resp = self._try_stored(anim_id, version, opcode, intensity)
                 self.log(f"RX ◀── {hexdump(resp) if resp else '[no reply]'}")
-                if ok:
+            if resp is None and self.wake_cube():
+                with self.lock:
+                    ok, resp = self._try_stored(anim_id, version, opcode, intensity)
+                    self.log(f"RX ◀── {hexdump(resp) if resp else '[no reply]'}")
+            with self.lock:
+                if resp is None:
+                    self.log(f"[-] No answer from the cube, so ID {anim_id} v{version} wasn't tried.")
+                    self.status_callback("The cube isn't answering", "#f59e0b")
+                elif ok:
                     self.log(f"[+] The cube has ID {anim_id} v{version} stored and is playing it.")
                     self.status_callback(f"Playing '{name}'" if name else f"Playing stored animation {anim_id}", "#10b981")
                 else:
@@ -2214,9 +2298,17 @@ class TittleDesktopApp:
         last = self.client.last_on_action
         if last:
             method, args, kwargs = last
-            getattr(self.client, method)(*args, **kwargs)
+            self._bg(lambda: getattr(self.client, method)(*args, **kwargs))
         else:
-            self.client.set_solid_color(self.cur_r, self.cur_g, self.cur_b, self.cur_intensity)
+            self._bg(self.client.set_solid_color, self.cur_r, self.cur_g, self.cur_b, self.cur_intensity)
+
+    def set_brightness(self, value):
+        """Tray brightness: move the slider and re-send what's playing."""
+        try:
+            self.bright_scale.set(value)
+        except Exception:
+            pass
+        self.apply_brightness(value)
 
     def _setup_tray(self):
         if sys.platform != "win32":
@@ -2256,6 +2348,10 @@ class TittleDesktopApp:
             Menu.SEPARATOR,
             Item("On", post(self.turn_on)),
             Item("Off", post(lambda: self._bg(self.client.turn_off))),
+            Item("Brightness", Menu(*[
+                Item(f"{pct}%", post(lambda v=val: self.set_brightness(v)), radio=True,
+                     checked=lambda item, v=val: abs(self.cur_intensity - v) <= 12)
+                for pct, val in ((100, 255), (75, 191), (50, 128), (25, 64), (10, 26))])),
             Menu.SEPARATOR,
             Item("Look-alike moods", Menu(lambda: preset_items("look"))),
             Item("3D presets", Menu(lambda: preset_items("3d"))),
@@ -2369,7 +2465,7 @@ class TittleDesktopApp:
 
         # Tab 7: Picture -> light mode (Tittle Image Studio built in)
         self.tab_pic = tk.Frame(self.notebook, bg="#0f172a", padx=15, pady=15)
-        self.notebook.add(self.tab_pic, text="🖼 Picture")
+        self.notebook.add(self.tab_pic, text="🖼 Preset Generator")
         self._init_picture_tab()
 
         # Tab 8: Recover the official animations
@@ -2566,7 +2662,7 @@ class TittleDesktopApp:
         args = list(args)
         args[pos] = value
         self.client.log(f"[*] Brightness {value}: re-sending {method}")
-        getattr(self.client, method)(*args, **kwargs)
+        self._bg(lambda: getattr(self.client, method)(*args, **kwargs))
 
     def send_cur_lamp(self):
         threading.Thread(target=lambda: self.client.set_solid_color(
@@ -2824,7 +2920,7 @@ class TittleDesktopApp:
     def _init_picture_tab(self):
         it, err = self._load_image_tool()
         self.image_tool, self.pic_result, self.pic_path = it, None, None
-        tk.Label(self.tab_pic, text="Make a light mode from any picture", font=("Segoe UI", 11, "bold"),
+        tk.Label(self.tab_pic, text="Make a new preset", font=("Segoe UI", 11, "bold"),
                  fg="#f8fafc", bg="#0f172a").pack(anchor=tk.W)
         if it is None:
             tk.Label(self.tab_pic, wraplength=900, justify=tk.LEFT, font=("Segoe UI", 10), fg="#fbbf24", bg="#0f172a",
@@ -2833,8 +2929,8 @@ class TittleDesktopApp:
                           f"({err})").pack(anchor=tk.W, pady=10)
             return
         tk.Label(self.tab_pic, font=("Segoe UI", 9), fg="#94a3b8", bg="#0f172a",
-                 text="Convert a picture directly, or let any AI (ChatGPT, Gemini, Claude…) design a pixel-art "
-                      "version of it.").pack(anchor=tk.W, pady=(2, 8))
+                 text="Convert a picture directly, or let any AI (ChatGPT, Gemini, Claude…) design one from your "
+                      "idea or picture.").pack(anchor=tk.W, pady=(2, 8))
         body = tk.Frame(self.tab_pic, bg="#0f172a")
         body.pack(fill=tk.BOTH, expand=True)
         left = tk.Frame(body, bg="#0f172a")
@@ -2876,11 +2972,17 @@ class TittleDesktopApp:
 
         c2 = card("B · With any AI chat")
         r = tk.Frame(c2, bg="#1e293b"); r.pack(fill=tk.X, pady=4)
-        lab(r, "Idea (optional):").pack(side=tk.LEFT)
-        self.pic_idea = tk.Entry(r, width=36, bg="#0f172a", fg="#38bdf8", insertbackground="white", bd=1)
+        lab(r, "Describe it in words:").pack(side=tk.LEFT)
+        self.pic_idea = tk.Entry(r, width=34, bg="#0f172a", fg="#38bdf8", insertbackground="white", bd=1)
         self.pic_idea.pack(side=tk.LEFT, padx=6)
-        btn(r, "📋 Copy the prompt", self.on_pic_prompt).pack(side=tk.LEFT)
-        lab(c2, "Paste the prompt into the AI with your picture, then paste its whole answer here:",
+        lab(c2, "e.g. \"a jumping frog\" or \"a slow purple storm\". Text only, not a link.", fg="#94a3b8").pack(anchor=tk.W)
+        r = tk.Frame(c2, bg="#1e293b"); r.pack(fill=tk.X, pady=4)
+        self.pic_attach = tk.BooleanVar(value=False)
+        tk.Checkbutton(r, text="I'll also attach a picture in the AI chat", variable=self.pic_attach, bg="#1e293b",
+                       fg="#e2e8f0", selectcolor="#0f172a", activebackground="#1e293b",
+                       font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        btn(r, "📋 Copy the prompt", self.on_pic_prompt).pack(side=tk.LEFT, padx=8)
+        lab(c2, "Paste the prompt into any AI chat, then paste its whole answer here:",
             fg="#94a3b8").pack(anchor=tk.W)
         self.pic_answer = tk.Text(c2, height=6, bg="#020617", fg="#e2e8f0", insertbackground="white", bd=0,
                                   font=("Consolas", 9))
@@ -2922,9 +3024,18 @@ class TittleDesktopApp:
         self._pic_show(obj, f"Made '{obj['name']}' ({len(frames)} frames).")
 
     def on_pic_prompt(self):
+        idea, picture = self.pic_idea.get().strip(), bool(self.pic_attach.get())
+        if not idea and not picture:
+            messagebox.showinfo("Describe it first", "Type an idea in words, or tick 'I'll also attach a picture'.")
+            return
+        try:
+            prompt = self.image_tool.build_prompt(idea, picture=picture)
+        except TypeError:                     # an older tittle_image.py next to this file
+            prompt = self.image_tool.build_prompt(idea)
         self.root.clipboard_clear()
-        self.root.clipboard_append(self.image_tool.build_prompt(self.pic_idea.get()))
-        self.pic_status.configure(text="Prompt copied. Paste it into any AI chat, attach your picture, and send.")
+        self.root.clipboard_append(prompt)
+        self.pic_status.configure(text="Prompt copied. Paste it into any AI chat" +
+                                  (", attach your picture," if picture else "") + " and send.")
 
     def on_pic_answer(self):
         text = self.pic_answer.get("1.0", tk.END)
@@ -3361,7 +3472,8 @@ class TittleDesktopApp:
         btn_clear = tk.Button(top, text="Clear Log", bg="#334155", fg="white", font=("Segoe UI", 8), bd=0, padx=8, pady=2,
                               command=lambda: self.log_text.delete("1.0", tk.END))
         btn_clear.pack(side=tk.RIGHT)
-        for label, cmd in (("💾 Save log…", self.save_log), ("📋 Copy log", self.copy_log)):
+        for label, cmd in (("💾 Save log…", self.save_log), ("📋 Copy log", self.copy_log),
+                           ("🧪 Wake test", lambda: self._bg(self.client.wake_cube, True))):
             tk.Button(top, text=label, bg="#2563eb", fg="white", font=("Segoe UI", 8, "bold"), bd=0, padx=8, pady=2,
                       command=cmd).pack(side=tk.RIGHT, padx=(0, 6))
 

@@ -2,6 +2,21 @@
 
 The version is shown in the desktop app's window title. Newest first.
 
+## 2026.11.11-r12
+
+- **Waking the cube during a scheduled off:** when the cube doesn't answer, the app now tries to
+  wake it before giving up. It sends the discovery message, which also finds the cube if its address
+  changed, and keeps trying to connect for about 15 seconds. Then it repeats what you asked for.
+  The status bar says "Waking the cube…" meanwhile. If it still fails, **🔍 Debug → 🧪 Wake test**
+  runs the same steps on their own and logs exactly what the cube does. Please send that log.
+- **Clearer message:** a stored ID that gets no answer now says "no answer from the cube" instead of
+  "not stored on the cube".
+- **Brightness in the tray menu:** 100%, 75%, 50%, 25% or 10%. The tray's On no longer freezes the
+  window while the cube answers.
+- **Picture tab renamed 🖼 Preset Generator.** The AI part now says *Describe it in words* (text,
+  not a link) and has a tick box *I'll also attach a picture in the AI chat*. The copied prompt only
+  mentions a picture when that box is ticked. Otherwise it asks for a design based on your words.
+
 ## 2026.11.11-r11
 
 - **Wi-Fi setup for a new or reset cube:** ⚙ Settings → *Connect a reset cube to Wi-Fi*. Join this
